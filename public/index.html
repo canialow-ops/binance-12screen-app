@@ -52,6 +52,52 @@
       }
       .chart-host { position: absolute; inset: 0; }
       .chart-host canvas { display: block; }
+      .chart-host .tv-lightweight-charts {
+        display: block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        width: 100% !important;
+        height: 100% !important;
+      }
+      .chart-host .tv-lightweight-charts table {
+        display: table !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+      }
+      .chart-host .tv-lightweight-charts tr { display: table-row !important; }
+      .chart-host .tv-lightweight-charts td {
+        display: table-cell !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        color: #ffffff !important;
+      }
+      .chart-host .tv-lightweight-charts canvas {
+        display: block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+      }
+      .chart-price-tag {
+        position: absolute;
+        right: 2px;
+        top: 46%;
+        z-index: 8;
+        display: none;
+        min-width: 52px;
+        padding: 2px 6px;
+        border-radius: 2px;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 1.2;
+        color: #ffffff !important;
+        background: #26a69a;
+        pointer-events: none;
+        font-variant-numeric: tabular-nums;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+      }
+      .chart-price-tag.down {
+        background: #ef5350;
+        color: #ffffff !important;
+      }
       .chart-badge {
         position: absolute; left: 6px; top: 4px; z-index: 4;
         font-size: 9px; letter-spacing: 0.08em; color: rgba(148, 163, 184, 0.7);
@@ -847,15 +893,20 @@
           const chart = LightweightCharts.createChart(host, {
             layout: {
               background: { type: "solid", color: "#070b12" },
-              textColor: "rgba(100, 116, 139, 0.55)",
-              fontSize: 8,
+              textColor: "#e2e8f0",
+              fontSize: 10,
               attributionLogo: false,
             },
             grid: {
               vertLines: { color: "rgba(148,163,184,0.07)" },
               horzLines: { color: "rgba(148,163,184,0.07)" },
             },
-            rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.04, bottom: 0.08 } },
+            rightPriceScale: {
+              visible: true,
+              borderVisible: false,
+              entireTextOnly: false,
+              scaleMargins: { top: 0.04, bottom: 0.08 },
+            },
             timeScale: {
               visible: false,
               borderVisible: false,
@@ -863,9 +914,9 @@
               secondsVisible: false,
               barSpacing: 1.8,
               minBarSpacing: 0.55,
-              rightOffset: 2,
+              rightOffset: 8,
               fixLeftEdge: true,
-              fixRightEdge: true,
+              fixRightEdge: false,
             },
             crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },
             handleScroll: false,
@@ -878,6 +929,23 @@
             borderVisible: false,
             wickUpColor: "#26a69a",
             wickDownColor: "#ef5350",
+            lastValueVisible: true,
+            priceLineVisible: true,
+            priceLineWidth: 1,
+            priceLineColor: "#26a69a",
+            priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
+          });
+          series.applyOptions({
+            lastValueVisible: true,
+            priceLineVisible: true,
+            priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
+          });
+          chart.priceScale("right").applyOptions({
+            visible: true,
+            entireTextOnly: false,
+            borderVisible: false,
+            textColor: "#ffffff",
+            minimumWidth: 56,
           });
           series.setData(bars);
           const rect = host.getBoundingClientRect();
@@ -889,18 +957,87 @@
         }
       }
 
+      function ensurePriceTag(root) {
+        const box = root && root.querySelector(".chart-box");
+        if (!box) return null;
+        let tag = box.querySelector("[data-price-tag]");
+        if (tag) return tag;
+        tag = document.createElement("div");
+        tag.setAttribute("data-price-tag", "");
+        tag.className = "chart-price-tag";
+        box.appendChild(tag);
+        return tag;
+      }
+
+      function paintPriceTag(slot, price, prevPrice) {
+        const root = phones.get(slot);
+        const tag = ensurePriceTag(root);
+        if (!tag || !(Number(price) > 0)) return;
+        const up = !(Number(prevPrice) > 0) || price >= prevPrice;
+        tag.textContent = fmt(price);
+        tag.classList.toggle("down", !up);
+        tag.style.display = "block";
+        const handle = charts.get(slot);
+        const canvas = handle?.canvas;
+        if (canvas && canvas.clientHeight > 8) {
+          const bars = handle.bars || [];
+          let min = Infinity;
+          let max = -Infinity;
+          for (const bar of bars) {
+            min = Math.min(min, bar.low);
+            max = Math.max(max, bar.high);
+          }
+          min = Math.min(min, price);
+          max = Math.max(max, price);
+          const pad = (max - min) * 0.06 || min * 0.01;
+          min -= pad;
+          max += pad;
+          const span = max - min || 1;
+          const y = ((max - price) / span) * canvas.clientHeight;
+          tag.style.top = `${Math.max(8, Math.min(canvas.clientHeight - 14, y))}px`;
+          tag.style.transform = "translateY(-50%)";
+        }
+      }
+
       function applyLivePriceToChart(id, px) {
         const slot = slotOfBot(id);
         if (!slot) return;
         const handle = charts.get(slot);
         if (!handle || !(Number(px) > 0)) return;
         const price = Number(px);
+        const prev = Number(handle.lastPrice) > 0 ? handle.lastPrice : price;
+        paintPriceTag(slot, price, handle.lastPrice === price ? handle.prevPrice : prev);
         if (handle.lastPrice === price) return;
-        handle.prevPrice = Number(handle.lastPrice) > 0 ? handle.lastPrice : price;
+        handle.prevPrice = prev;
         handle.lastPrice = price;
         if (handle.series) {
           const up = price >= handle.prevPrice;
           const color = up ? "#26a69a" : "#ef5350";
+          try {
+            handle.series.applyOptions({
+              lastValueVisible: true,
+              priceLineVisible: true,
+              priceLineColor: color,
+              priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
+            });
+          } catch (_err) {}
+          try {
+            handle.chart?.priceScale("right").applyOptions({
+              visible: true,
+              entireTextOnly: false,
+            });
+          } catch (_err2) {}
+          if (handle.last) {
+            const nextBar = {
+              ...handle.last,
+              close: price,
+              high: Math.max(handle.last.high, price),
+              low: Math.min(handle.last.low, price),
+            };
+            handle.last = nextBar;
+            handle.bars[handle.bars.length - 1] = nextBar;
+            try { handle.series.update(nextBar); } catch (_err3) {}
+          }
           if (handle.priceLine) {
             try {
               handle.priceLine.applyOptions({ price, color, lineVisible: true, axisLabelVisible: true });
@@ -976,7 +1113,7 @@
         if (badge) badge.textContent = `${baseAsset(symbol)} · ${chartTf(interval)}`;
         const tf = chartTf(interval);
         const bars = (await loadKlines(symbol, tf)) || [];
-        const lw = null;
+        const lw = createLightweight(host, bars);
         const handle = {
           symbol: String(symbol || "").toUpperCase(),
           interval: tf,
@@ -988,7 +1125,19 @@
           series: lw?.series || null,
           canvas: null,
         };
-        if (!lw) {
+        if (handle.series) {
+          try {
+            handle.series.applyOptions({
+              lastValueVisible: true,
+              priceLineVisible: true,
+              priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
+            });
+            handle.chart.priceScale("right").applyOptions({
+              visible: true,
+              entireTextOnly: false,
+            });
+          } catch (_err) {}
+        } else {
           const canvas = document.createElement("canvas");
           canvas.style.width = "100%";
           canvas.style.height = "100%";
@@ -996,6 +1145,7 @@
           handle.canvas = canvas;
           drawCanvasKline(canvas, bars, handle.lastPrice, handle.prevPrice);
         }
+        ensurePriceTag(root);
         handle.ro = new ResizeObserver(() => {
           if (handle.chart) {
             const rect = host.getBoundingClientRect();
