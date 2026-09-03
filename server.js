@@ -168,17 +168,26 @@ function readSession(req) {
   }
 }
 
-function setSessionCookie(res, payload) {
+function requestIsHttps(req) {
+  const xf = String(req.headers["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  return Boolean(req.secure) || xf === "https";
+}
+
+function setSessionCookie(res, payload, req) {
   const token = signPayload({ ...payload, exp: Date.now() + SESSION_TTL_MS });
-  const secure = process.env.VERCEL ? "; Secure" : "";
+  const secure = requestIsHttps(req) ? "; Secure" : "";
   res.setHeader(
     "Set-Cookie",
     `${COOKIE_NAME}=${token}; HttpOnly; Path=/; SameSite=Lax${secure}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
   );
 }
 
-function clearSessionCookie(res) {
-  res.setHeader("Set-Cookie", `${COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
+function clearSessionCookie(res, req) {
+  const secure = req && requestIsHttps(req) ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `${COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax${secure}; Max-Age=0`);
 }
 
 function safeEqual(a, b) {
@@ -231,6 +240,7 @@ function broadcastConfig() {
 }
 
 const app = express();
+app.set("trust proxy", true);
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 
@@ -255,12 +265,12 @@ app.use(express.static(PUBLIC_DIR, { index: false }));
 
 app.post("/api/auth/login", (req, res) => {
   const username = String(req.body?.id || req.body?.username || "").trim() || "guest";
-  setSessionCookie(res, { role: "customer", id: username, kind: "guest" });
+  setSessionCookie(res, { role: "customer", id: username, kind: "guest" }, req);
   res.json({ ok: true, role: "customer", id: username });
 });
 
-app.post("/api/auth/logout", (_req, res) => {
-  clearSessionCookie(res);
+app.post("/api/auth/logout", (req, res) => {
+  clearSessionCookie(res, req);
   res.json({ ok: true });
 });
 
@@ -301,7 +311,7 @@ app.get("/api/marks", async (_req, res) => {
   }
 });
 
-const KLINE_INTERVALS = new Set(["1m", "3m", "5m", "15m", "1h", "4h"]);
+const KLINE_INTERVALS = new Set(["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1w"]);
 
 app.get("/api/klines", async (req, res) => {
   const symbol = String(req.query.symbol || "")
@@ -309,18 +319,26 @@ app.get("/api/klines", async (req, res) => {
     .replace(/[^A-Z0-9]/g, "")
     .slice(0, 20);
   const interval = String(req.query.interval || "1m");
-  const limit = Math.min(500, Math.max(80, Number(req.query.limit) || 420));
+  const limit = Math.min(200, Math.max(20, Number(req.query.limit) || 52));
   if (!symbol || !KLINE_INTERVALS.has(interval)) {
     return res.status(400).json({ error: "无效的交易对或周期", klines: [] });
   }
   try {
-    const { data } = await axios.get("https://fapi.binance.com/fapi/v1/klines", {
+    const { data } = await axios.get("https://api.binance.com/api/v3/klines", {
       params: { symbol, interval, limit },
-      timeout: 2500,
+      timeout: 8000,
     });
-    res.json({ klines: data || [] });
-  } catch (_err) {
-    res.json({ klines: [] });
+    res.json({ klines: data || [], symbol, interval });
+  } catch (_spotErr) {
+    try {
+      const { data } = await axios.get("https://fapi.binance.com/fapi/v1/klines", {
+        params: { symbol, interval, limit },
+        timeout: 8000,
+      });
+      res.json({ klines: data || [], symbol, interval });
+    } catch (_err) {
+      res.json({ klines: [], symbol, interval });
+    }
   }
 });
 
@@ -333,7 +351,7 @@ app.post("/api/admin/login", (req, res) => {
   if (!safeEqual(password, ADMIN_PASSWORD)) {
     return res.status(401).json({ error: "管理员密码错误" });
   }
-  setSessionCookie(res, { role: "admin", id: "admin" });
+  setSessionCookie(res, { role: "admin", id: "admin" }, req);
   res.json({ ok: true, role: "admin" });
 });
 
@@ -387,9 +405,9 @@ if (!process.env.VERCEL) {
     socket.send(JSON.stringify({ type: "config", slots: publicSlots() }));
   });
   server.listen(PORT, () => {
-    console.log(`尼龙虾 NEEKO 智能交易  http://localhost:${PORT}`);
-    console.log(`客户登录  http://localhost:${PORT}/login.html`);
-    console.log(`管理后台  http://localhost:${PORT}/admin.html`);
+    console.log(`尼龙虾 NEEKO 智能交易 已启动 端口 ${PORT}`);
+    console.log("本机预览请使用当前访问地址（http 自动走 http/ws，https 自动走 https/wss）");
+    console.log("生产域名示例  https://neekoquant.com");
   });
 }
 

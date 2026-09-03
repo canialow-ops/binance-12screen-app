@@ -4,8 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NEEKO QUANT TRADING SYSTEM - Live Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="origin.js"></script>
+    <script src="vendor/tailwindcss.js"></script>
+    <script src="vendor/lightweight-charts.standalone.production.js"></script>
     <style>
       html, body {
         height: 100%;
@@ -181,8 +182,14 @@
     </header>
     <main id="wall" class="wall p-2"></main>
     <script>
+      function apiUrl(path) {
+        return window.NEEKO_ORIGIN ? NEEKO_ORIGIN.apiUrl(path) : path;
+      }
+      function pageUrl(file) {
+        return window.NEEKO_ORIGIN ? NEEKO_ORIGIN.pageUrl(file) : String(file || "").replace(/^\//, "");
+      }
       if (localStorage.getItem("auth_token") !== "logged_in") {
-        window.location.replace("/login.html");
+        window.location.replace(pageUrl("login.html"));
         throw new Error("unauthorized");
       }
       const PAGE_SIZE = 60;
@@ -190,8 +197,15 @@
       const BOT_COUNT = 1200;
       const GROUP_LETTERS = "ABCDEFGHIJKLMNOPQRST";
       const MAJOR_ASSETS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "BNB"];
-      const INTERVALS = ["1m", "3m"];
-      const INTERVAL_SEC = { "1m": 60, "3m": 180 };
+      const MAJOR_SYMBOLS = MAJOR_ASSETS.map((a) => `${a}USDT`);
+      const BINANCE_PAIRS = new Set(MAJOR_SYMBOLS);
+      const globalSymbolMap = Object.create(null);
+      const symbolPriceMap = Object.create(null);
+      MAJOR_ASSETS.forEach((asset) => {
+        globalSymbolMap[asset] = { asset, pair: `${asset}USDT`, bars: [], price: 0 };
+      });
+      const INTERVALS = ["1h"];
+      const INTERVAL_SEC = { "1h": 3600 };
       const LEDGER_KEY = "NEEKO_LEDGER_v4";
       const SMALL_IDS = new Set([5, 14, 25, 37, 49, 55]);
       const STRATEGY_TAGS = [
@@ -208,14 +222,21 @@
       ];
       const SIZE_DECIMALS = { BTC: 4, ETH: 4, BNB: 3, SOL: 3, XRP: 2, DOGE: 2, ADA: 2 };
       const FIXED_MARKS = {
-        BTCUSDT: 77153.29,
-        ETHUSDT: 2397.73,
-        BNBUSDT: 691.53,
-        SOLUSDT: 100.26,
-        XRPUSDT: 1.3581,
-        DOGEUSDT: 0.08239,
-        ADAUSDT: 0.20531,
+        BTCUSDT: 78000,
+        ETHUSDT: 2410,
+        BNBUSDT: 713,
+        SOLUSDT: 101,
+        XRPUSDT: 1.37,
+        DOGEUSDT: 0.083,
+        ADAUSDT: 0.208,
       };
+      for (const asset of MAJOR_ASSETS) {
+        const seed = Number(FIXED_MARKS[`${asset}USDT`]);
+        if (seed > 0) {
+          globalSymbolMap[asset].price = seed;
+          symbolPriceMap[`${asset}USDT`] = seed;
+        }
+      }
 
       function fnv1a(str) {
         let h = 2166136261;
@@ -263,11 +284,81 @@
       }
 
       function chartTf(interval) {
-        return interval === "3m" ? "3m" : "1m";
+        return "1h";
+      }
+
+      function assetCode(symbol) {
+        const s = String(symbol || "").toUpperCase();
+        if (MAJOR_ASSETS.includes(s)) return s;
+        const raw = s.replace(/USDT$|BUSD$|USDC$/, "");
+        return MAJOR_ASSETS.includes(raw) ? raw : "BTC";
+      }
+
+      function symbolStore(symbol) {
+        return globalSymbolMap[assetCode(symbol)];
+      }
+
+      function symbolKey(symbol) {
+        return String(symbol || "").toUpperCase();
+      }
+
+      function symbolAnchorPrice(store) {
+        if (!store) return 0;
+        const last = store.bars.length ? Number(store.bars[store.bars.length - 1].close) : 0;
+        const mid = Number(FIXED_MARKS[store.pair]) || 0;
+        return last > 0 ? last : mid;
+      }
+
+      function isPlausibleSymbolPrice(store, px) {
+        const n = Number(px);
+        const anchor = symbolAnchorPrice(store) || Number(FIXED_MARKS[store?.pair]);
+        if (!(n > 0) || !(anchor > 0)) return false;
+        return n / anchor >= 0.5 && n / anchor <= 2;
+      }
+
+      function sanitizeStorePrice(store) {
+        if (!store) return 0;
+        const px = Number(store.price);
+        if (px > 0 && isPlausibleSymbolPrice(store, px)) return px;
+        const next = symbolAnchorPrice(store);
+        if (next > 0) {
+          store.price = next;
+          symbolPriceMap[store.pair] = next;
+        }
+        return Number(store.price) || 0;
+      }
+
+      function setSymbolPrice(symbol, px) {
+        const store = symbolStore(symbol);
+        const n = Number(px);
+        if (!store || !(n > 0)) return 0;
+        if (!isPlausibleSymbolPrice(store, n)) return sanitizeStorePrice(store);
+        const next = roundPx(n, store.pair);
+        store.price = next > 0 ? next : n;
+        symbolPriceMap[store.pair] = store.price;
+        return store.price;
+      }
+
+      function getSymbolPrice(symbol) {
+        const store = symbolStore(symbol);
+        if (store) sanitizeStorePrice(store);
+        if (store && Number(store.price) > 0) return store.price;
+        const key = store ? store.pair : symbolKey(symbol);
+        const n = Number(symbolPriceMap[key]);
+        if (n > 0) {
+          if (store) store.price = n;
+          return n;
+        }
+        const fb = fallbackMark(key);
+        if (fb > 0) {
+          if (store) store.price = fb;
+          symbolPriceMap[key] = fb;
+        }
+        return fb;
       }
 
       function liveMarkOf(symbol) {
-        const px = liveMarkBySymbol.get(String(symbol || "").toUpperCase());
+        const px = getSymbolPrice(symbol);
         return Number(px) > 0 ? px : 0;
       }
 
@@ -289,7 +380,8 @@
 
       function canonicalEntry(st) {
         const ref = liveMarkOf(st.symbol) || fallbackMark(st.symbol);
-        return roundPx(entryFromMark(ref, st.leverage, st.side, st.roiBias), st.symbol);
+        const bias = Math.max(-10, Math.min(20, Number(st.roiBias) || 4));
+        return roundPx(entryFromMark(ref, st.leverage, st.side, bias), st.symbol);
       }
 
       function roundMoney(n) {
@@ -378,17 +470,15 @@
       const chartMountSeq = new Map();
       const klineCache = new Map();
       const klineInflight = new Map();
-      const liveMarkBySymbol = new Map();
       let slotsCache = [];
       let marketWs;
       let marketReconnectTimer = 0;
       let marketWsGeneration = 0;
       let marketFeedKind = "futures";
-      let liveTickRaf = 0;
-      const liveTickBuf = new Map();
       let logsStarted = false;
       let tradeStarted = false;
-      let markPulseStarted = false;
+      let priceEngineStarted = false;
+      let lastPremiumFetch = 0;
       let lastWsAt = 0;
       let ledgerCache = { bots: {} };
       let chartMountCursor = 0;
@@ -468,7 +558,7 @@
         const wave = Math.sin(dayIndex * (0.097 + botId * 0.013) + botId * 1.7) * (3.8 + (botId % 12) * 0.21);
         const trend = (((dayIndex + botId * 17) % 367) / 367) * 6.4 - 1.8;
         const roi = (unit - 0.28) * 21.6 + wave + trend * 0.35;
-        return Math.round(roi * 100) / 100;
+        return Math.max(-10, Math.min(20, Math.round(roi * 100) / 100));
       }
 
       function dayBook(botId, book) {
@@ -490,7 +580,7 @@
         const day = dayBook(id, book);
         const leverage = Number(book.leverage);
         const side = String(book.side || "LONG").toUpperCase() === "SHORT" ? "SHORT" : "LONG";
-        const interval = INTERVALS.includes(book.interval) ? book.interval : "1m";
+        const interval = INTERVALS.includes(book.interval) ? book.interval : "1h";
         return {
           id,
           name: `NEEKO Bot #${String(id).padStart(4, "0")}`,
@@ -508,7 +598,8 @@
       }
 
       function entryFromMark(mark, leverage, side, roiPct) {
-        const r = roiPct / 100 / leverage;
+        const roi = Math.max(-10, Math.min(20, Number(roiPct) || 0));
+        const r = roi / 100 / Math.max(1, Number(leverage) || 8);
         if (side === "LONG") return mark / (1 + r);
         return mark * (1 + r);
       }
@@ -548,6 +639,11 @@
 
       function walletOf(st) {
         return Number(st.baseBalance) > 0 ? st.baseBalance : st.initialBalance;
+      }
+
+      function equityOf(st) {
+        const pnl = Number(st.pnl);
+        return roundMoney(walletOf(st) + (Number.isFinite(pnl) ? pnl : 0));
       }
 
       function sizeBand(st) {
@@ -686,13 +782,25 @@
       }
 
       function refreshDerived(st) {
-        const pnl = theoreticalPnl(st);
+        const mark = Number(st.mark);
+        const live = liveMarkOf(st.symbol);
+        if (live > 0) st.mark = live;
         const entry = Number(st.entry);
+        if (st.mark > 0 && entry > 0 && Math.abs(st.mark / entry - 1) > 0.08) {
+          st.entry = canonicalEntry(st);
+          st.liq = liqFromEntry(st.entry, st.side);
+        }
+        const pnl = theoreticalPnl(st);
         const size = Number(st.size);
-        const margin = (size * entry) / (st.leverage || 8);
-        st.pnl = pnl;
+        const margin = (size * Number(st.entry)) / (st.leverage || 8);
         st.margin = margin;
-        st.roi = margin > 0 ? (pnl / margin) * 100 : 0;
+        let roi = margin > 0 ? (pnl / margin) * 100 : 0;
+        if (roi > 20 || roi < -10) {
+          roi = Math.max(-10, Math.min(20, roi));
+        }
+        st.roi = roi;
+        st.pnl = margin > 0 ? (roi / 100) * margin : 0;
+        st.totalBalance = equityOf(st);
       }
 
       function seedBooks(st) {
@@ -756,12 +864,149 @@
           .slice(-180);
       }
 
+      function cloneBars(bars) {
+        return (bars || []).map((bar) => ({
+          time: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+        }));
+      }
+
+      function closeLineFromBars(bars) {
+        return (bars || [])
+          .filter((bar) => Number.isFinite(bar.time) && Number(bar.close) > 0)
+          .map((bar) => ({ time: bar.time, value: Number(bar.close) }));
+      }
+
+      function pairSymbol(symbol) {
+        const s = symbolKey(symbol);
+        if (s.endsWith("USDT") || s.endsWith("BUSD") || s.endsWith("USDC")) return s;
+        const asset = MAJOR_ASSETS.includes(s) ? s : baseAsset(s);
+        return `${asset}USDT`;
+      }
+
+      function chartBarsOf(symbol) {
+        const store = symbolStore(symbol);
+        return (store && store.bars) || [];
+      }
+
+      function updateSharedLastBar(symbol, price) {
+        const store = symbolStore(symbol);
+        const px = Number(price);
+        if (!store || !(px > 0)) return null;
+        if (!isPlausibleSymbolPrice(store, px)) return liveBarOf(store.asset);
+        store.price = px;
+        symbolPriceMap[store.pair] = px;
+        return liveBarOf(store.asset);
+      }
+
+      function liveBarOf(symbol) {
+        const store = symbolStore(symbol);
+        if (!store || !store.bars.length) return null;
+        const last = store.bars[store.bars.length - 1];
+        const px = Number(store.price) > 0 ? store.price : Number(last.close);
+        return {
+          time: last.time,
+          open: last.open,
+          high: Math.max(Number(last.high), Number(last.open), px),
+          low: Math.min(Number(last.low), Number(last.open), px),
+          close: px,
+        };
+      }
+
+      function paintLastClose(bars, mark) {
+        const list = cloneBars(bars);
+        const px = Number(mark);
+        if (!list.length || !(px > 0)) return list;
+        const last = list[list.length - 1];
+        last.close = px;
+        last.high = Math.max(last.high, last.open, last.close, px);
+        last.low = Math.min(last.low, last.open, last.close, px);
+        list[list.length - 1] = last;
+        return list;
+      }
+
+      function generateSymbolKlines(symbol, interval = "1h") {
+        const asset = assetCode(symbol);
+        const mids = {
+          BTC: 78000,
+          ETH: 2410,
+          SOL: 101,
+          XRP: 1.37,
+          DOGE: 0.083,
+          ADA: 0.208,
+          BNB: 713,
+        };
+        const mid = mids[asset] || Number(fallbackMark(symbol)) || 100;
+        const tf = INTERVAL_SEC[interval === "1h" ? "1h" : chartTf(interval)] || 3600;
+        const n = 72;
+        const now = Math.floor(Date.now() / 1000);
+        const aligned = now - (now % tf);
+        const rng = mulberry32(fnv1a(`NEEKO-LOCAL-1h|${asset}`));
+        const vol = {
+          BTC: 0.006,
+          ETH: 0.007,
+          SOL: 0.011,
+          XRP: 0.009,
+          DOGE: 0.014,
+          ADA: 0.01,
+          BNB: 0.0065,
+        }[asset] || 0.008;
+        const bars = [];
+        let px = mid;
+        for (let i = 0; i < n; i += 1) {
+          const t = n === 1 ? 0 : i / (n - 1);
+          let y;
+          if (asset === "BTC") {
+            y = 0.5 + 0.42 * Math.sin(t * Math.PI * 2.2) + 0.12 * Math.sin(t * Math.PI * 7);
+          } else if (asset === "ETH") {
+            y = 0.5 + 0.22 * Math.sin(t * Math.PI * 5.4) + 0.1 * Math.sin(t * Math.PI * 12);
+          } else if (asset === "SOL") {
+            y = 0.12 + 0.78 * t + 0.08 * Math.sin(t * Math.PI * 8);
+          } else if (asset === "XRP") {
+            y = 0.5 + 0.28 * (Math.sin(t * Math.PI * 3.2) >= 0 ? 1 : -1) + 0.04 * Math.sin(t * 24);
+          } else if (asset === "DOGE") {
+            y = 0.4 + 0.12 * Math.sin(t * Math.PI * 15) + ((i % 12 === 0) ? 0.38 : 0);
+          } else if (asset === "ADA") {
+            y = t < 0.55 ? 0.86 - 0.58 * (t / 0.55) : 0.28 + 0.58 * ((t - 0.55) / 0.45);
+          } else if (asset === "BNB") {
+            y = 0.16 + 0.14 * Math.floor(t * 5) + 0.05 * Math.sin(t * 18);
+          } else {
+            y = 0.5 + 0.2 * Math.sin(t * Math.PI * 3);
+          }
+          y = Math.min(0.97, Math.max(0.03, y + (rng() - 0.5) * 0.05));
+          const target = mid * (0.94 + y * 0.12);
+          const open = px * (1 + (rng() - 0.5) * vol * 0.8);
+          let close = px + (target - px) * (0.4 + rng() * 0.45) + px * (rng() - 0.5) * vol;
+          const body = Math.abs(close - open) || px * vol * 0.35;
+          let high = Math.max(open, close) + body * (0.25 + rng() * 1.1) + px * vol * rng();
+          let low = Math.min(open, close) - body * (0.25 + rng() * 1.1) - px * vol * rng();
+          if (low <= 0) low = Math.min(open, close) * 0.97;
+          if (high <= Math.max(open, close)) high = Math.max(open, close) * 1.002;
+          bars.push({
+            time: aligned - (n - 1 - i) * tf,
+            open,
+            high,
+            low,
+            close,
+          });
+          px = close;
+        }
+        const last = bars[bars.length - 1];
+        last.close = mid * (1 + (rng() - 0.5) * 0.004);
+        last.high = Math.max(last.high, last.open, last.close);
+        last.low = Math.min(last.low, last.open, last.close);
+        return bars;
+      }
+
       function upsertBarList(bars, bar) {
         if (!Array.isArray(bars) || !bar) return bars || [];
         const last = bars[bars.length - 1];
         if (!last || bar.time > last.time) {
           bars.push(bar);
-          if (bars.length > 200) bars.shift();
+          if (bars.length > 280) bars.shift();
         } else if (bar.time === last.time) {
           bars[bars.length - 1] = { ...last, ...bar, time: last.time };
         }
@@ -769,13 +1014,14 @@
       }
 
       function cacheKlineBar(symbol, interval, bar) {
-        const key = `${symbol}|${chartTf(interval)}`;
-        const current = klineCache.get(key);
-        if (!current) {
-          klineCache.set(key, [bar]);
+        if (!bar) return;
+        const store = symbolStore(symbol);
+        if (!store) return;
+        if (!store.bars.length) {
+          store.bars = cloneBars([bar]);
           return;
         }
-        upsertBarList(current, bar);
+        upsertBarList(store.bars, bar);
       }
 
       function drawCanvasKline(canvas, bars, lastPrice, prevPrice) {
@@ -818,8 +1064,8 @@
           const yO = ((max - bar.open) / span) * h;
           const yC = ((max - bar.close) / span) * h;
           const up = bar.close >= bar.open;
-          ctx.strokeStyle = up ? "#26a69a" : "#ef5350";
-          ctx.fillStyle = up ? "#26a69a" : "#ef5350";
+          ctx.strokeStyle = up ? "#10b981" : "#ef4444";
+          ctx.fillStyle = up ? "#10b981" : "#ef4444";
           ctx.beginPath();
           ctx.moveTo(x, yH);
           ctx.lineTo(x, yL);
@@ -891,48 +1137,69 @@
         const host = (handle && handle.host) || (root && root.querySelector("[data-chart]"));
         if (handle) {
           try { handle.ro?.disconnect(); } catch (_err) {}
+          handle.ro = null;
           try {
             if (handle.priceLine && handle.series && typeof handle.series.removePriceLine === "function") {
               handle.series.removePriceLine(handle.priceLine);
             }
           } catch (_err) {}
           handle.priceLine = null;
-          try { handle.chart?.remove(); } catch (_err) {}
+          try { handle.series = null; } catch (_err) {}
+          try {
+            if (handle.chart) {
+              if (typeof handle.chart.remove === "function") handle.chart.remove();
+              else if (typeof handle.chart.destroy === "function") handle.chart.destroy();
+            }
+          } catch (_err) {}
           handle.chart = null;
           handle.series = null;
+          handle.canvas = null;
+          handle.bars = null;
+          handle.last = null;
         }
         if (host) host.innerHTML = "";
         if (root) {
           root.querySelectorAll("[data-price-tag]").forEach((el) => el.remove());
+          const h = root.querySelector("[data-chart]");
+          if (h) h.innerHTML = "";
         }
         charts.delete(id);
       }
 
+      function destroyAllCharts() {
+        chartGen += 1;
+        for (let slot = 1; slot <= PAGE_SIZE; slot += 1) {
+          chartMountSeq.set(slot, (Number(chartMountSeq.get(slot)) || 0) + 1);
+        }
+        const ids = Array.from(new Set([...charts.keys(), ...Array.from({ length: PAGE_SIZE }, (_, i) => i + 1)]));
+        for (let i = 0; i < ids.length; i += 1) destroyChart(ids[i]);
+        for (let slot = 1; slot <= PAGE_SIZE; slot += 1) {
+          const root = phones.get(slot);
+          const host = root && root.querySelector("[data-chart]");
+          if (host) host.innerHTML = "";
+          if (root) root.querySelectorAll("[data-price-tag]").forEach((el) => el.remove());
+        }
+      }
+
       function applyChartChrome(chart) {
         if (!chart) return;
+        const scale = {
+          visible: false,
+          autoScale: true,
+          borderVisible: false,
+          scaleMargins: { top: 0.05, bottom: 0.05 },
+        };
         try {
           chart.applyOptions({
             grid: {
               vertLines: { visible: false },
               horzLines: { visible: false },
             },
-            rightPriceScale: {
-              visible: true,
-              width: 65,
-              borderVisible: false,
-              entireTextOnly: false,
-            },
+            rightPriceScale: scale,
           });
         } catch (_err) {}
         try {
-          chart.priceScale("right").applyOptions({
-            visible: true,
-            width: 65,
-            minimumWidth: 65,
-            borderVisible: false,
-            entireTextOnly: false,
-            textColor: "#ffffff",
-          });
+          chart.priceScale("right").applyOptions(scale);
         } catch (_err) {}
       }
 
@@ -952,19 +1219,19 @@
               horzLines: { visible: false },
             },
             rightPriceScale: {
-              visible: true,
-              width: 65,
+              visible: false,
+              autoScale: true,
               borderVisible: false,
-              entireTextOnly: false,
+              scaleMargins: { top: 0.05, bottom: 0.05 },
             },
             timeScale: {
               visible: false,
               borderVisible: false,
               timeVisible: false,
               secondsVisible: false,
-              barSpacing: 1.8,
-              minBarSpacing: 0.55,
-              rightOffset: 18,
+              barSpacing: 4.6,
+              minBarSpacing: 2.4,
+              rightOffset: 10,
               fixLeftEdge: false,
               fixRightEdge: false,
             },
@@ -975,45 +1242,23 @@
           });
           applyChartChrome(chart);
           const series = chart.addCandlestickSeries({
-            upColor: "#26a69a",
-            downColor: "#ef5350",
+            upColor: "#10b981",
+            downColor: "#ef4444",
             borderVisible: false,
-            wickUpColor: "#26a69a",
-            wickDownColor: "#ef5350",
+            wickUpColor: "#10b981",
+            wickDownColor: "#ef4444",
             lastValueVisible: true,
             priceLineVisible: true,
             priceLineWidth: 1,
-            priceLineColor: "#26a69a",
+            priceLineColor: "#10b981",
             priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
           });
-          series.applyOptions({
-            lastValueVisible: false,
-            priceLineVisible: false,
-          });
           applyChartChrome(chart);
-          if (bars.length) series.setData(bars);
+          const data = cloneBars(bars);
+          if (data.length) series.setData(data);
+          applyChartChrome(chart);
+          try { series.priceScale().applyOptions({ autoScale: true, scaleMargins: { top: 0.05, bottom: 0.05 } }); } catch (_err) {}
           let lastPriceSeries = null;
-          try {
-            lastPriceSeries = chart.addLineSeries({
-              color: "#26a69a",
-              lineVisible: true,
-              lineWidth: 2,
-              lastValueVisible: true,
-              priceLineVisible: true,
-              priceLineWidth: 1,
-              priceLineStyle: 2,
-              crosshairMarkerVisible: false,
-              priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
-            });
-            lastPriceSeries.applyOptions({
-              lastValueVisible: true,
-              priceLineVisible: true,
-            });
-            const last = bars[bars.length - 1];
-            if (last) lastPriceSeries.setData([{ time: last.time, value: last.close }]);
-          } catch (_lineErr) {
-            lastPriceSeries = null;
-          }
           const rect = host.getBoundingClientRect();
           chart.applyOptions({
             width: Math.max(1, rect.width),
@@ -1023,12 +1268,13 @@
               horzLines: { visible: false },
             },
             rightPriceScale: {
-              visible: true,
-              width: 65,
+              visible: false,
+              autoScale: true,
               borderVisible: false,
-              entireTextOnly: false,
+              scaleMargins: { top: 0.05, bottom: 0.05 },
             },
           });
+          try { chart.priceScale("right").applyOptions({ visible: false, autoScale: true }); } catch (_err) {}
           chart.timeScale().fitContent();
           return { chart, series, lastPriceSeries };
         } catch (_err) {
@@ -1056,17 +1302,13 @@
         const handle = charts.get(slot);
         const tag = ensurePriceTag(root);
         if (!tag || !(Number(price) > 0)) return;
-        if (handle && handle.lastPriceSeries) {
-          tag.style.display = "none";
-          return;
-        }
         const up = !(Number(prevPrice) > 0) || price >= prevPrice;
         tag.textContent = fmt(price);
         tag.classList.toggle("down", !up);
         tag.style.display = "block";
         const box = handle?.host || root.querySelector("[data-chart]") || handle?.canvas;
         const h = box && box.clientHeight > 8 ? box.clientHeight : 0;
-        const bars = (handle && handle.bars) || [];
+        const bars = chartBarsOf(handle && handle.symbol);
         if (h && bars.length) {
           let min = Infinity;
           let max = -Infinity;
@@ -1087,87 +1329,66 @@
       }
 
       function applyLivePriceToChart(id, px) {
+        const st = botState.get(id);
         const slot = slotOfBot(id);
-        if (!slot) return;
+        if (!st || !slot) return;
         const handle = charts.get(slot);
-        if (!handle || !(Number(px) > 0)) return;
-        const price = Number(px);
+        const store = symbolStore(st.symbol);
+        if (!handle || !store || handle.botId !== id) return;
+        if (handle.asset !== store.asset || handle.asset !== assetCode(st.symbol)) return;
+        sanitizeStorePrice(store);
+        const price = Number(store.price) > 0 ? store.price : Number(px);
+        if (!(price > 0) || !isPlausibleSymbolPrice(store, price)) return;
+        if (!(price > 0)) return;
         const prev = Number(handle.lastPrice) > 0 ? handle.lastPrice : price;
         handle.prevPrice = prev;
         handle.lastPrice = price;
         paintPriceTag(slot, price, prev);
-        const t = Math.floor(Date.now() / 1000);
-        const point = { time: t, value: price };
-        if (handle.lastPriceSeries) {
-          if (!Array.isArray(handle.livePoints)) handle.livePoints = [];
-          const pts = handle.livePoints;
-          if (pts.length && pts[pts.length - 1].time === t) pts[pts.length - 1] = point;
-          else pts.push(point);
-          if (pts.length > 240) pts.splice(0, pts.length - 240);
-          try {
-            handle.lastPriceSeries.update(point);
-          } catch (_err) {
-            try { handle.lastPriceSeries.setData(pts.slice()); } catch (_e) {}
-          }
-          const up = price >= prev;
-          try {
-            handle.lastPriceSeries.applyOptions({
-              lastValueVisible: true,
-              priceLineVisible: true,
-              lineVisible: true,
-              priceLineColor: up ? "#26a69a" : "#ef5350",
-              color: up ? "#26a69a" : "#ef5350",
-            });
-            handle.chart?.applyOptions({
-              rightPriceScale: {
-                visible: true,
-                width: 65,
-              },
-            });
-          } catch (_err) {}
-          try { handle.chart?.timeScale().scrollToRealTime(); } catch (_err) {}
-        }
-        if (handle.series && handle.last) {
-          const nextBar = {
-            time: handle.last.time,
-            open: handle.last.open,
-            high: Math.max(handle.last.high, price),
-            low: Math.min(handle.last.low, price),
-            close: price,
-          };
+        const up = price >= prev;
+        const nextBar = liveBarOf(store.asset);
+        if (nextBar) {
           handle.last = nextBar;
-          if (Array.isArray(handle.bars) && handle.bars.length) {
-            handle.bars[handle.bars.length - 1] = nextBar;
+          if (handle.series) {
+            try { handle.series.update(nextBar); } catch (_err3) {}
+            try {
+              handle.series.applyOptions({
+                lastValueVisible: true,
+                priceLineVisible: true,
+                priceLineColor: up ? "#10b981" : "#ef4444",
+              });
+              handle.chart?.applyOptions({
+                grid: {
+                  vertLines: { visible: false },
+                  horzLines: { visible: false },
+                },
+                rightPriceScale: {
+                  visible: false,
+                  autoScale: true,
+                  borderVisible: false,
+                  scaleMargins: { top: 0.05, bottom: 0.05 },
+                },
+              });
+            } catch (_err) {}
           }
-          try { handle.series.update(nextBar); } catch (_err3) {}
         }
         if (handle.canvas) queueCanvas(slot);
       }
 
       function queueLiveTick(symbol, px) {
-        const sym = String(symbol || "").toUpperCase();
-        const price = Number(px);
-        if (!sym || !(price > 0)) return;
-        liveMarkBySymbol.set(sym, price);
-        liveTickBuf.set(sym, price);
-        if (liveTickRaf) return;
-        liveTickRaf = requestAnimationFrame(() => {
-          liveTickRaf = 0;
-          const batch = Array.from(liveTickBuf.entries());
-          liveTickBuf.clear();
-          for (let i = 0; i < batch.length; i += 1) {
-            flushLiveTick(batch[i][0], batch[i][1]);
-          }
-        });
+        setSymbolPrice(symbol, px);
       }
 
-      function flushLiveTick(sym, px) {
-        for (let view = 1; view <= PAGE_SIZE; view += 1) {
-          const id = botIdOfSlot(view);
+      function applySymbolPriceToAllBots(sym, px) {
+        const asset = assetCode(sym);
+        const price = px != null ? setSymbolPrice(asset, px) : getSymbolPrice(asset);
+        if (!asset || !(price > 0)) return;
+        updateSharedLastBar(asset, price);
+        for (let id = 1; id <= BOT_COUNT; id += 1) {
           const st = botState.get(id);
-          if (!st || String(st.symbol).toUpperCase() !== sym) continue;
+          if (!st || assetCode(st.symbol) !== asset) continue;
           const prevPnl = Number(st.pnl) || 0;
-          st.mark = roundPx(px, st.symbol);
+          const prevMark = Number(st.mark) || 0;
+          st.mark = price;
           if (!st.entry) {
             st.entry = canonicalEntry(st);
             st.liq = liqFromEntry(st.entry, st.side);
@@ -1176,105 +1397,82 @@
           }
           refreshDerived(st);
           st.lastPnlDir = st.pnl > prevPnl + 0.01 ? 1 : st.pnl < prevPnl - 0.01 ? -1 : 0;
-          applyLivePriceToChart(id, px);
-          paint(id, { pnlDir: st.lastPnlDir || 0 });
+          const markDir = price > prevMark + 1e-12 ? 1 : price < prevMark - 1e-12 ? -1 : 0;
+          if (slotOfBot(id)) {
+            applyLivePriceToChart(id, price);
+            paint(id, { skipChart: true, pnlDir: st.lastPnlDir || 0, balDir: st.lastPnlDir || 0, markDir });
+          }
         }
       }
 
-      async function loadKlines(symbol, interval) {
-        const key = `${symbol}|${interval}`;
-        if (klineCache.has(key)) return klineCache.get(key).slice();
-        if (klineInflight.has(key)) return klineInflight.get(key);
-        const job = (async () => {
-          try {
-            const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=180`, { credentials: "include" });
-            const json = await res.json();
-            const bars = mapKlines(json.klines);
-            if (bars.length) {
-              klineCache.set(key, bars);
-              return bars.slice();
-            }
-          } catch (_err) {}
-          try {
-            const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=180`);
-            const rows = await res.json();
-            const bars = mapKlines(rows);
-            if (bars.length) {
-              klineCache.set(key, bars);
-              return bars.slice();
-            }
-          } catch (_err) {}
-          try {
-            const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=180`);
-            const rows = await res.json();
-            const bars = mapKlines(rows);
-            if (bars.length) {
-              klineCache.set(key, bars);
-              return bars.slice();
-            }
-          } catch (_err) {}
-          return [];
-        })();
-        klineInflight.set(key, job);
-        try {
-          return await job;
-        } finally {
-          klineInflight.delete(key);
+      async function loadKlines(symbol) {
+        const store = symbolStore(symbol);
+        if (!store) return [];
+        if (!store.bars.length) {
+          store.bars = generateSymbolKlines(store.asset, "1h");
+          const last = store.bars[store.bars.length - 1];
+          if (last) {
+            store.price = last.close;
+            symbolPriceMap[store.pair] = last.close;
+          }
         }
+        return cloneBars(store.bars);
       }
 
-      async function mountChart(slot, symbol, interval, mark) {
+      async function prefetchSymbolKlines() {
+        MAJOR_ASSETS.forEach((asset) => {
+          loadKlines(asset);
+        });
+      }
+
+      async function mountChart(slot) {
         const root = phones.get(slot);
         if (!root) return;
+        const botId = botIdOfSlot(slot);
+        const st = botState.get(botId);
+        if (!st) return;
+        const store = symbolStore(st.symbol);
+        if (!store) return;
         const seq = (Number(chartMountSeq.get(slot)) || 0) + 1;
         chartMountSeq.set(slot, seq);
         const host = root.querySelector("[data-chart]");
         destroyChart(slot);
         if (host) host.innerHTML = "";
         const badge = root.querySelector("[data-badge]");
-        if (badge) badge.textContent = `${baseAsset(symbol)} · ${chartTf(interval)}`;
-        const tf = chartTf(interval);
-        const bars = (await loadKlines(symbol, tf)) || [];
-        if (chartMountSeq.get(slot) !== seq) return;
+        if (badge) badge.textContent = `${store.asset} · 1h`;
+        const history = cloneBars(store.bars.length ? store.bars : await loadKlines(store.asset));
+        if (chartMountSeq.get(slot) !== seq || botIdOfSlot(slot) !== botId) return;
         if (!phones.get(slot) || phones.get(slot) !== root) return;
+        if (assetCode(botState.get(botId)?.symbol) !== store.asset) return;
+        sanitizeStorePrice(store);
         destroyChart(slot);
         if (host) host.innerHTML = "";
+        const livePx = Number(store.price) > 0 ? store.price : liveMarkOf(store.pair);
+        const bars = paintLastClose(history, livePx);
         const lw = createLightweight(host, bars);
         const handle = {
           host,
-          symbol: String(symbol || "").toUpperCase(),
-          interval: tf,
+          botId,
+          symbol: store.pair,
+          asset: store.asset,
+          interval: "1h",
           bars,
-          last: bars[bars.length - 1],
-          lastPrice: Number(mark) > 0 ? Number(mark) : liveMarkOf(symbol),
+          last: liveBarOf(store.asset) || bars[bars.length - 1],
+          lastPrice: livePx,
           prevPrice: 0,
           chart: lw?.chart || null,
           series: lw?.series || null,
           lastPriceSeries: lw?.lastPriceSeries || null,
           priceLine: null,
           canvas: null,
-          livePoints: [],
+          livePoints: closeLineFromBars(store.bars),
         };
-        if (handle.lastPriceSeries) {
-          const t0 = Math.floor(Date.now() / 1000);
-          const v0 = Number(handle.lastPrice) > 0 ? handle.lastPrice : Number(handle.last && handle.last.close) || 0;
-          if (v0 > 0) {
-            handle.livePoints = [{ time: t0, value: v0 }];
-            try { handle.lastPriceSeries.setData(handle.livePoints); } catch (_err) {}
-          }
-        }
         if (handle.series) {
           try {
             handle.series.applyOptions({
-              lastValueVisible: false,
-              priceLineVisible: false,
+              lastValueVisible: true,
+              priceLineVisible: true,
             });
-            if (handle.lastPriceSeries) {
-              handle.lastPriceSeries.applyOptions({
-                lastValueVisible: true,
-                priceLineVisible: true,
-              });
-            }
             applyChartChrome(handle.chart);
           } catch (_err) {}
         } else {
@@ -1302,8 +1500,10 @@
                 horzLines: { visible: false },
               },
               rightPriceScale: {
-                visible: true,
-                width: 65,
+                visible: false,
+                autoScale: true,
+                borderVisible: false,
+                scaleMargins: { top: 0.05, bottom: 0.05 },
               },
             });
             applyChartChrome(handle.chart);
@@ -1312,43 +1512,44 @@
           }
         });
         handle.ro.observe(host);
+        if (chartMountSeq.get(slot) !== seq || botIdOfSlot(slot) !== botId) {
+          try { handle.ro?.disconnect(); } catch (_err) {}
+          try { handle.chart?.remove(); } catch (_err) {}
+          if (host) host.innerHTML = "";
+          return;
+        }
         charts.set(slot, handle);
-        const botId = botIdOfSlot(slot);
-        const livePx = Number(handle.lastPrice) > 0 ? handle.lastPrice : liveMarkOf(symbol);
-        if (botId && livePx > 0) applyLivePriceToChart(botId, livePx);
+        const tickPx = Number(store.price) || liveMarkOf(store.pair) || Number(handle.lastPrice);
+        if (botId && tickPx > 0) applyLivePriceToChart(botId, tickPx);
       }
 
       function applyBinanceKline(symbol, interval, bar, closed) {
-        const sym = String(symbol || "").toUpperCase();
+        const sym = symbolKey(symbol);
         const tf = chartTf(interval);
+        if (bar && Number(bar.close) > 0) queueLiveTick(sym, bar.close);
         cacheKlineBar(sym, tf, bar);
         for (let view = 1; view <= PAGE_SIZE; view += 1) {
           const id = botIdOfSlot(view);
           const st = botState.get(id);
           if (!st) continue;
-          if (String(st.symbol).toUpperCase() !== sym) continue;
+          if (symbolKey(st.symbol) !== sym) continue;
           if (chartTf(st.interval) !== tf) continue;
           applyKlineBar(id, bar, closed);
         }
       }
 
       async function bootstrapMarks() {
-        try {
-          const res = await fetch("https://fapi.binance.com/fapi/v1/premiumIndex");
-          const rows = await res.json();
-          if (!Array.isArray(rows)) return;
-          for (const row of rows) {
-            const px = Number(row.markPrice);
-            if (row.symbol && px > 0) liveMarkBySymbol.set(String(row.symbol).toUpperCase(), px);
-          }
-        } catch (_err) {}
+        await prefetchSymbolKlines();
       }
 
       function applyKlineBar(botId, bar, closed) {
         const slot = slotOfBot(botId);
         if (!slot) return;
         const handle = charts.get(slot);
-        if (!handle || !bar) return;
+        const st = botState.get(botId);
+        if (!handle || !bar || !st) return;
+        if (handle.botId !== botId) return;
+        if (handle.asset !== assetCode(st.symbol)) return;
         if (!Array.isArray(handle.bars)) handle.bars = [];
         const last = handle.last;
         if (!last || bar.time > last.time) {
@@ -1361,6 +1562,18 @@
         }
         if (handle.series) {
           try { handle.series.update(handle.last); } catch (_err) {}
+          if (handle.lastPriceSeries) {
+            const pt = { time: handle.last.time, value: Number(handle.last.close) };
+            if (!Array.isArray(handle.livePoints) || !handle.livePoints.length) {
+              handle.livePoints = closeLineFromBars(handle.bars);
+            }
+            const pts = handle.livePoints;
+            if (!pts.length || pts[pts.length - 1].time < pt.time) pts.push(pt);
+            else pts[pts.length - 1] = pt;
+            try { handle.lastPriceSeries.update(pt); } catch (_err) {
+              try { handle.lastPriceSeries.setData(pts.slice()); } catch (_e) {}
+            }
+          }
           if (closed) handle.chart?.timeScale().scrollToRealTime();
         } else if (handle.canvas) {
           queueCanvas(slot);
@@ -1437,22 +1650,8 @@
 
       function applyMark(st, px) {
         if (!st || !Number.isFinite(px) || px <= 0) return false;
-        const next = roundPx(px, st.symbol);
-        if (st.mark === next) return false;
-        const prevPnl = st.pnl;
-        st.mark = next;
-        if (!st.entry) {
-          st.entry = canonicalEntry(st);
-          st.liq = liqFromEntry(st.entry, st.side);
-          seedBooks(st);
-          st.seeded = true;
-          refreshDerived(st);
-          if (slotOfBot(st.id)) applyLivePriceToChart(st.id, next);
-          return true;
-        }
-        refreshDerived(st);
-        st.lastPnlDir = st.pnl > prevPnl + 0.01 ? 1 : st.pnl < prevPnl - 0.01 ? -1 : 0;
-        if (slotOfBot(st.id)) applyLivePriceToChart(st.id, next);
+        setSymbolPrice(st.symbol, px);
+        applySymbolPriceToAllBots(st.symbol);
         return true;
       }
 
@@ -1470,14 +1669,15 @@
       }
 
       function seedPosition(st) {
+        const live = liveMarkOf(st.symbol) || fallbackMark(st.symbol);
+        if (live > 0) st.mark = roundPx(live, st.symbol);
         if (st.seeded && st.entry && st.size) {
-          syncClock(st);
+          refreshDerived(st);
           return;
         }
         st.entry = canonicalEntry(st);
         st.liq = liqFromEntry(st.entry, st.side);
         seedBooks(st);
-        syncClock(st);
         st.seeded = true;
         persistBot(st);
       }
@@ -1498,22 +1698,25 @@
         const tone = pnl >= 0 ? "up" : "down";
         const muted = reloadingIds.has(id);
         const pnlKind = muted ? "" : flags.pnlDir > 0 ? "flash-up" : flags.pnlDir < 0 ? "flash-down" : "";
-        const balKind = muted ? "" : flags.balDir > 0 ? "flash-up" : flags.balDir < 0 ? "flash-down" : "";
+        const equityDir = flags.balDir || flags.pnlDir || 0;
+        const balKind = muted ? "" : equityDir > 0 ? "flash-up" : equityDir < 0 ? "flash-down" : "";
         const sizeKind = muted ? "" : flags.sizeChanged ? (flags.sizeDir >= 0 ? "flash-up" : "flash-down") : "";
         const balEl = root.querySelector("[data-balance]");
         const pnlEl = root.querySelector("[data-pnl]");
         const roiEl = root.querySelector("[data-roi]");
         const sizeEl = root.querySelector("[data-size]");
         const markEl = root.querySelector("[data-mark]");
-        balEl.textContent = `$${fmt(st.baseBalance, 2)} USDT`;
+        const equity = equityOf(st);
+        balEl.textContent = `$${fmt(equity, 2)} USDT`;
         bumpFlash(balEl, balKind, "text-white");
         pnlEl.textContent = `${pnl >= 0 ? "+" : ""}$${fmt(Math.abs(pnl), 2)}`;
         bumpFlash(pnlEl, pnlKind, `leading-none ${tone}`);
         roiEl.textContent = `${roi >= 0 ? "+" : ""}${roi.toFixed(2)}%`;
         bumpFlash(roiEl, pnlKind, `leading-none ${tone}`);
+        const markKind = muted ? "" : flags.markDir > 0 ? "flash-up" : flags.markDir < 0 ? "flash-down" : "";
         markEl.textContent = fmt(st.mark);
-        markEl.className = "text-cyan-300";
-        if (slotOfBot(id) && Number(st.mark) > 0) applyLivePriceToChart(id, st.mark);
+        bumpFlash(markEl, markKind, "text-cyan-300");
+        if (!flags.skipChart && slotOfBot(id) && Number(st.mark) > 0) applyLivePriceToChart(id, st.mark);
         const entryEl = root.querySelector("[data-entry]");
         const liqEl = root.querySelector("[data-liq]");
         entryEl.textContent = fmt(st.entry);
@@ -1549,7 +1752,7 @@
           if (cursor > PAGE_SIZE) return;
           const botId = botIdOfSlot(cursor);
           const st = botState.get(botId);
-          if (st) await mountChart(cursor, st.symbol, st.interval, st.mark || fallbackMark(st.symbol));
+          if (st) await mountChart(cursor);
           if (gen !== chartGen) return;
           setTimeout(step, 16);
         };
@@ -1564,6 +1767,7 @@
 
       function selectGroup(g) {
         if (g === groupIndex || g < 0 || g >= GROUP_COUNT) return;
+        destroyAllCharts();
         groupIndex = g;
         reloadingIds.clear();
         for (const el of phones.values()) {
@@ -1578,7 +1782,7 @@
           const st = botState.get(botId);
           if (!st) continue;
           seedPosition(st);
-          paint(botId);
+          paint(botId, { skipChart: true });
         }
         pumpChartQueue();
       }
@@ -1642,11 +1846,12 @@
             if (changed) pushLog(slot.id, composeExecLog(botState.get(slot.id), "open"));
           }
         }
+        await prefetchSymbolKlines();
         pumpChartQueue();
         connectMarket();
         startLogEngine();
         startTradeEngine();
-        startMarkPulse();
+        startPriceEngine();
         startReloadEngine();
       }
 
@@ -1667,74 +1872,18 @@
 
       function connectMarket() {
         closeMarketSocket();
-        const gen = ++marketWsGeneration;
-        let gotTick = false;
-        const parts = [];
-        const seen = new Set();
-        const add = (stream) => {
-          if (seen.has(stream)) return;
-          seen.add(stream);
-          parts.push(stream);
-        };
-        for (const asset of MAJOR_ASSETS) {
-          const s = `${asset.toLowerCase()}usdt`;
-          add(`${s}@aggTrade`);
-          add(`${s}@kline_1m`);
-          add(`${s}@kline_3m`);
-          if (marketFeedKind === "futures") add(`${s}@markPrice@1s`);
-        }
-        if (!parts.length) return;
-        const base = marketFeedKind === "spot"
-          ? "wss://stream.binance.com:9443/stream"
-          : "wss://fstream.binance.com/stream";
-        marketWs = new WebSocket(`${base}?streams=${parts.join("/")}`);
-        marketWs.onopen = () => {
-          if (gen !== marketWsGeneration) return;
-          lastWsAt = Date.now();
-          document.getElementById("link-status").textContent = "LIVE CONNECTED · MARK PRICE 1s / LIGHTWEIGHT CHART";
-        };
-        marketWs.onmessage = (event) => {
-          if (gen !== marketWsGeneration) return;
-          lastWsAt = Date.now();
-          let msg;
-          try { msg = JSON.parse(event.data); } catch (_err) { return; }
-          const data = msg.data || msg;
-          if (data.e === "aggTrade" || data.e === "trade") {
-            gotTick = true;
-            queueLiveTick(data.s, data.p);
-            return;
-          }
-          if (data.e === "markPriceUpdate") {
-            gotTick = true;
-            queueLiveTick(data.s, data.p);
-            return;
-          }
-          if (data.e === "kline" && data.k) {
-            gotTick = true;
-            const k = data.k;
-            applyBinanceKline(data.s || k.s, k.i, {
-              time: Math.floor(Number(k.t) / 1000),
-              open: Number(k.o),
-              high: Number(k.h),
-              low: Number(k.l),
-              close: Number(k.c),
-            }, Boolean(k.x));
-            queueLiveTick(data.s || k.s, k.c);
-          }
-        };
-        marketWs.onerror = () => {
-          if (gen !== marketWsGeneration) return;
-          try { marketWs && marketWs.close(); } catch (_err) {}
-        };
-        marketWs.onclose = () => {
-          if (gen !== marketWsGeneration) return;
-          document.getElementById("link-status").textContent = "RECONNECTING MARKET FEED...";
-          if (!gotTick && marketFeedKind === "futures") marketFeedKind = "spot";
-          marketReconnectTimer = setTimeout(() => {
-            if (gen !== marketWsGeneration) return;
-            connectMarket();
-          }, 1200);
-        };
+        lastWsAt = Date.now();
+        const el = document.getElementById("link-status");
+        if (el) el.textContent = "LIVE · LOCAL 1H ENGINE";
+        try {
+          const url = window.NEEKO_ORIGIN ? NEEKO_ORIGIN.wsUrl("/ws") : ((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+          const ws = new WebSocket(url);
+          marketWs = ws;
+          ws.onopen = () => { lastWsAt = Date.now(); };
+          ws.onmessage = () => { lastWsAt = Date.now(); };
+          ws.onerror = () => {};
+          ws.onclose = () => { if (marketWs === ws) marketWs = null; };
+        } catch (_err) {}
       }
 
       window.addEventListener("pagehide", () => {
@@ -1747,25 +1896,7 @@
       });
 
       function pulseLastClose(id, price) {
-        const slot = slotOfBot(id);
-        if (!slot) return;
-        const handle = charts.get(slot);
-        if (!handle || !handle.last || !Number.isFinite(price) || price <= 0) return;
-        const last = handle.last;
-        const next = {
-          time: last.time,
-          open: last.open,
-          high: Math.max(last.high, price),
-          low: Math.min(last.low, price),
-          close: price,
-        };
-        handle.last = next;
-        handle.bars[handle.bars.length - 1] = next;
-        if (handle.series) {
-          try { handle.series.update(next); } catch (_err) {}
-        } else if (handle.canvas) {
-          queueCanvas(slot);
-        }
+        applyLivePriceToChart(id, price);
       }
 
       function startLogEngine() {
@@ -1785,21 +1916,25 @@
         }
       }
 
-      function startMarkPulse() {
-        if (markPulseStarted) return;
-        markPulseStarted = true;
+      function startPriceEngine() {
+        if (priceEngineStarted) return;
+        priceEngineStarted = true;
         setInterval(() => {
-          const t = unixSec();
-          for (let view = 1; view <= PAGE_SIZE; view += 1) {
-            const id = botIdOfSlot(view);
-            const st = botState.get(id);
-            if (!st || !st.seeded) continue;
-            const prevPnl = st.pnl;
-            syncClock(st, t);
-            st.lastPnlDir = st.pnl > prevPnl + 0.01 ? 1 : st.pnl < prevPnl - 0.01 ? -1 : 0;
-            paint(id, { pnlDir: st.lastPnlDir || 0 });
+          lastWsAt = Date.now();
+          const now = Date.now();
+          for (let i = 0; i < MAJOR_ASSETS.length; i += 1) {
+            const asset = MAJOR_ASSETS[i];
+            const store = globalSymbolMap[asset];
+            if (!store) continue;
+            const base = Number(store.price) > 0
+              ? store.price
+              : (store.bars.length ? store.bars[store.bars.length - 1].close : fallbackMark(store.pair));
+            if (!(base > 0)) continue;
+            const wave = Math.sin(now / 480 + i * 1.7) * 0.00035;
+            const noise = (Math.random() - 0.5) * 0.0005;
+            applySymbolPriceToAllBots(asset, base * (1 + wave + noise));
           }
-        }, 1000);
+        }, 700);
       }
 
       function padBot(id) {
@@ -1959,10 +2094,10 @@
       });
 
       applyConfig(localSlots());
-      fetch("/api/wall", { credentials: "include" })
+      fetch(apiUrl("/api/wall"), { credentials: "include" })
         .then((res) => {
           if (res.status === 401) {
-            window.location.href = "/login.html";
+            window.location.href = pageUrl("login.html");
             return null;
           }
           return res.json();
@@ -1972,9 +2107,9 @@
       document.getElementById("logout").addEventListener("click", async () => {
         localStorage.removeItem("auth_token");
         try {
-          await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+          await fetch(apiUrl("/api/auth/logout"), { method: "POST", credentials: "include" });
         } catch (_err) {}
-        window.location.href = "/login.html";
+        window.location.href = pageUrl("login.html");
       });
 
     </script>

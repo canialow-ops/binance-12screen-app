@@ -4,7 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>管理员后台 - 12 机器人大屏</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="origin.js"></script>
+    <script src="vendor/tailwindcss.js"></script>
   </head>
   <body class="min-h-screen bg-slate-950 text-slate-100">
     <div id="login-view" class="flex min-h-screen items-center justify-center px-4">
@@ -27,7 +28,7 @@
       <header class="flex items-center justify-between border-b border-slate-800 px-6 py-3">
         <h1 class="text-lg font-semibold">管理员后台</h1>
         <div class="flex gap-3 text-sm">
-          <a href="/" class="text-amber-400 hover:text-amber-300">打开大屏</a>
+          <a href="index.html" class="text-amber-400 hover:text-amber-300">打开大屏</a>
           <button id="logout" class="text-slate-400 hover:text-white">退出</button>
         </div>
       </header>
@@ -66,7 +67,8 @@
       const onceSecret = document.getElementById("once-secret");
 
       async function api(url, options = {}) {
-        const res = await fetch(url, { credentials: "include", ...options });
+        const href = window.NEEKO_ORIGIN ? NEEKO_ORIGIN.apiUrl(url) : url;
+        const res = await fetch(href, { credentials: "include", ...options });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(json.error || "请求失败");
         return json;
@@ -166,7 +168,7 @@
         refresh();
       }
 
-      fetch("/api/auth/me", { credentials: "include" })
+      fetch(window.NEEKO_ORIGIN ? NEEKO_ORIGIN.apiUrl("/api/auth/me") : "api/auth/me", { credentials: "include" })
         .then((res) => res.json())
         .then((data) => {
           if (data.role === "admin") showDash();
@@ -195,7 +197,7 @@
       });
 
       document.getElementById("logout").addEventListener("click", async () => {
-        await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+        await fetch(window.NEEKO_ORIGIN ? NEEKO_ORIGIN.apiUrl("/api/auth/logout") : "api/auth/logout", { method: "POST", credentials: "include" });
         window.location.reload();
       });
     </script>
