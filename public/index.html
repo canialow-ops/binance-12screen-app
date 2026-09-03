@@ -824,7 +824,6 @@
           const bh = Math.max(1, Math.abs(yC - yO));
           ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
         }
-        if (live > 0) drawPriceTag(ctx, plotW, w, h, min, max, live, prevPrice);
       }
 
       function drawPriceTag(ctx, plotW, w, h, min, max, price, prevPrice) {
@@ -904,28 +903,22 @@
         charts.delete(id);
       }
 
-      function applyRightPriceScale(chart) {
+      function applyChartChrome(chart) {
         if (!chart) return;
         try {
           chart.applyOptions({
+            grid: {
+              vertLines: { visible: false },
+              horzLines: { visible: false },
+            },
             rightPriceScale: {
-              visible: true,
-              width: 65,
-              borderColor: "#2a2e39",
-              borderVisible: true,
-              entireTextOnly: false,
+              visible: false,
             },
           });
         } catch (_err) {}
         try {
           chart.priceScale("right").applyOptions({
-            visible: true,
-            entireTextOnly: false,
-            borderVisible: true,
-            borderColor: "#2a2e39",
-            width: 65,
-            minimumWidth: 65,
-            textColor: "#ffffff",
+            visible: false,
           });
         } catch (_err) {}
       }
@@ -942,16 +935,11 @@
               attributionLogo: false,
             },
             grid: {
-              vertLines: { color: "rgba(148,163,184,0.07)" },
-              horzLines: { color: "rgba(148,163,184,0.07)" },
+              vertLines: { visible: false },
+              horzLines: { visible: false },
             },
             rightPriceScale: {
-              visible: true,
-              width: 65,
-              borderColor: "#2a2e39",
-              borderVisible: true,
-              entireTextOnly: false,
-              scaleMargins: { top: 0.04, bottom: 0.08 },
+              visible: false,
             },
             timeScale: {
               visible: false,
@@ -969,7 +957,7 @@
             handleScale: false,
             kineticScroll: { mouse: false, touch: false },
           });
-          applyRightPriceScale(chart);
+          applyChartChrome(chart);
           const series = chart.addCandlestickSeries({
             upColor: "#26a69a",
             downColor: "#ef5350",
@@ -985,18 +973,19 @@
           series.applyOptions({
             lastValueVisible: true,
             priceLineVisible: true,
-            priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
           });
-          applyRightPriceScale(chart);
+          applyChartChrome(chart);
           if (bars.length) series.setData(bars);
           const rect = host.getBoundingClientRect();
           chart.applyOptions({
             width: Math.max(1, rect.width),
             height: Math.max(1, rect.height),
+            grid: {
+              vertLines: { visible: false },
+              horzLines: { visible: false },
+            },
             rightPriceScale: {
-              visible: true,
-              width: 65,
-              borderColor: "#2a2e39",
+              visible: false,
             },
           });
           chart.timeScale().fitContent();
@@ -1026,17 +1015,14 @@
         const handle = charts.get(slot);
         const tag = ensurePriceTag(root);
         if (!tag || !(Number(price) > 0)) return;
-        if (handle && handle.series) {
-          tag.style.display = "none";
-          return;
-        }
         const up = !(Number(prevPrice) > 0) || price >= prevPrice;
         tag.textContent = fmt(price);
         tag.classList.toggle("down", !up);
         tag.style.display = "block";
-        const canvas = handle?.canvas;
-        if (canvas && canvas.clientHeight > 8) {
-          const bars = handle.bars || [];
+        const box = handle?.host || root.querySelector("[data-chart]") || handle?.canvas;
+        const h = box && box.clientHeight > 8 ? box.clientHeight : 0;
+        const bars = (handle && handle.bars) || [];
+        if (h && bars.length) {
           let min = Infinity;
           let max = -Infinity;
           for (const bar of bars) {
@@ -1049,8 +1035,8 @@
           min -= pad;
           max += pad;
           const span = max - min || 1;
-          const y = ((max - price) / span) * canvas.clientHeight;
-          tag.style.top = `${Math.max(8, Math.min(canvas.clientHeight - 14, y))}px`;
+          const y = ((max - price) / span) * h;
+          tag.style.top = `${Math.max(8, Math.min(h - 14, y))}px`;
           tag.style.transform = "translateY(-50%)";
         }
       }
@@ -1074,17 +1060,10 @@
               lastValueVisible: true,
               priceLineVisible: true,
               priceLineColor: color,
-              priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
             });
           } catch (_err) {}
           try {
-            handle.chart?.priceScale("right").applyOptions({
-              visible: true,
-              entireTextOnly: false,
-              width: 65,
-              borderColor: "#2a2e39",
-            });
-            applyRightPriceScale(handle.chart);
+            applyChartChrome(handle.chart);
           } catch (_err2) {}
           if (handle.last) {
             const nextBar = {
@@ -1178,9 +1157,8 @@
             handle.series.applyOptions({
               lastValueVisible: true,
               priceLineVisible: true,
-              priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
             });
-            applyRightPriceScale(handle.chart);
+            applyChartChrome(handle.chart);
           } catch (_err) {}
         } else {
           const canvas = document.createElement("canvas");
@@ -1202,13 +1180,15 @@
             handle.chart.applyOptions({
               width: Math.max(1, rect.width),
               height: Math.max(1, rect.height),
+              grid: {
+                vertLines: { visible: false },
+                horzLines: { visible: false },
+              },
               rightPriceScale: {
-                visible: true,
-                width: 65,
-                borderColor: "#2a2e39",
+                visible: false,
               },
             });
-            applyRightPriceScale(handle.chart);
+            applyChartChrome(handle.chart);
           } else if (handle.canvas) {
             queueCanvas(slot);
           }
