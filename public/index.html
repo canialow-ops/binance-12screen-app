@@ -50,7 +50,8 @@
         position: relative; flex: 1 1 56%; min-height: 0; overflow: hidden;
         background: #070b12; pointer-events: none !important;
       }
-      .chart-host { position: absolute; inset: 0; }
+      .chart-host { position: absolute; inset: 0; overflow: hidden; }
+      .chart-host canvas { display: block; }
       .chart-host canvas { display: block; }
       .chart-host .tv-lightweight-charts {
         display: block !important;
@@ -374,6 +375,7 @@
       const phones = new Map();
       const botState = new Map();
       const charts = new Map();
+      const chartMountSeq = new Map();
       const klineCache = new Map();
       const klineInflight = new Map();
       const liveMarkBySymbol = new Map();
@@ -881,14 +883,56 @@
 
       function destroyChart(id) {
         const handle = charts.get(id);
-        if (!handle) return;
-        try { handle.ro?.disconnect(); } catch (_err) {}
-        try { handle.chart?.remove(); } catch (_err) {}
+        const root = phones.get(id);
+        const host = (handle && handle.host) || (root && root.querySelector("[data-chart]"));
+        if (handle) {
+          try { handle.ro?.disconnect(); } catch (_err) {}
+          try {
+            if (handle.priceLine && handle.series && typeof handle.series.removePriceLine === "function") {
+              handle.series.removePriceLine(handle.priceLine);
+            }
+          } catch (_err) {}
+          handle.priceLine = null;
+          try { handle.chart?.remove(); } catch (_err) {}
+          handle.chart = null;
+          handle.series = null;
+        }
+        if (host) host.innerHTML = "";
+        if (root) {
+          root.querySelectorAll("[data-price-tag]").forEach((el) => el.remove());
+        }
         charts.delete(id);
       }
 
+      function applyRightPriceScale(chart) {
+        if (!chart) return;
+        try {
+          chart.applyOptions({
+            rightPriceScale: {
+              visible: true,
+              width: 65,
+              borderColor: "#2a2e39",
+              borderVisible: true,
+              entireTextOnly: false,
+            },
+          });
+        } catch (_err) {}
+        try {
+          chart.priceScale("right").applyOptions({
+            visible: true,
+            entireTextOnly: false,
+            borderVisible: true,
+            borderColor: "#2a2e39",
+            width: 65,
+            minimumWidth: 65,
+            textColor: "#ffffff",
+          });
+        } catch (_err) {}
+      }
+
       function createLightweight(host, bars) {
-        if (typeof LightweightCharts === "undefined" || !LightweightCharts.createChart) return null;
+        if (!host || typeof LightweightCharts === "undefined" || !LightweightCharts.createChart) return null;
+        try { host.innerHTML = ""; } catch (_err) {}
         try {
           const chart = LightweightCharts.createChart(host, {
             layout: {
@@ -903,7 +947,9 @@
             },
             rightPriceScale: {
               visible: true,
-              borderVisible: false,
+              width: 65,
+              borderColor: "#2a2e39",
+              borderVisible: true,
               entireTextOnly: false,
               scaleMargins: { top: 0.04, bottom: 0.08 },
             },
@@ -923,6 +969,7 @@
             handleScale: false,
             kineticScroll: { mouse: false, touch: false },
           });
+          applyRightPriceScale(chart);
           const series = chart.addCandlestickSeries({
             upColor: "#26a69a",
             downColor: "#ef5350",
@@ -940,19 +987,22 @@
             priceLineVisible: true,
             priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
           });
-          chart.priceScale("right").applyOptions({
-            visible: true,
-            entireTextOnly: false,
-            borderVisible: false,
-            textColor: "#ffffff",
-            minimumWidth: 56,
-          });
-          series.setData(bars);
+          applyRightPriceScale(chart);
+          if (bars.length) series.setData(bars);
           const rect = host.getBoundingClientRect();
-          chart.applyOptions({ width: Math.max(1, rect.width), height: Math.max(1, rect.height) });
+          chart.applyOptions({
+            width: Math.max(1, rect.width),
+            height: Math.max(1, rect.height),
+            rightPriceScale: {
+              visible: true,
+              width: 65,
+              borderColor: "#2a2e39",
+            },
+          });
           chart.timeScale().fitContent();
           return { chart, series };
         } catch (_err) {
+          try { host.innerHTML = ""; } catch (_e) {}
           return null;
         }
       }
@@ -960,6 +1010,8 @@
       function ensurePriceTag(root) {
         const box = root && root.querySelector(".chart-box");
         if (!box) return null;
+        const tags = box.querySelectorAll("[data-price-tag]");
+        for (let i = 1; i < tags.length; i += 1) tags[i].remove();
         let tag = box.querySelector("[data-price-tag]");
         if (tag) return tag;
         tag = document.createElement("div");
@@ -971,13 +1023,17 @@
 
       function paintPriceTag(slot, price, prevPrice) {
         const root = phones.get(slot);
+        const handle = charts.get(slot);
         const tag = ensurePriceTag(root);
         if (!tag || !(Number(price) > 0)) return;
+        if (handle && handle.series) {
+          tag.style.display = "none";
+          return;
+        }
         const up = !(Number(prevPrice) > 0) || price >= prevPrice;
         tag.textContent = fmt(price);
         tag.classList.toggle("down", !up);
         tag.style.display = "block";
-        const handle = charts.get(slot);
         const canvas = handle?.canvas;
         if (canvas && canvas.clientHeight > 8) {
           const bars = handle.bars || [];
@@ -1025,7 +1081,10 @@
             handle.chart?.priceScale("right").applyOptions({
               visible: true,
               entireTextOnly: false,
+              width: 65,
+              borderColor: "#2a2e39",
             });
+            applyRightPriceScale(handle.chart);
           } catch (_err2) {}
           if (handle.last) {
             const nextBar = {
@@ -1037,25 +1096,6 @@
             handle.last = nextBar;
             handle.bars[handle.bars.length - 1] = nextBar;
             try { handle.series.update(nextBar); } catch (_err3) {}
-          }
-          if (handle.priceLine) {
-            try {
-              handle.priceLine.applyOptions({ price, color, lineVisible: true, axisLabelVisible: true });
-            } catch (_err) {
-              handle.priceLine = null;
-            }
-          }
-          if (!handle.priceLine) {
-            try {
-              handle.priceLine = handle.series.createPriceLine({
-                price,
-                color,
-                lineWidth: 1,
-                lineStyle: 2,
-                axisLabelVisible: true,
-                title: "",
-              });
-            } catch (_err) {}
           }
         }
         if (handle.canvas) queueCanvas(slot);
@@ -1106,15 +1146,22 @@
       async function mountChart(slot, symbol, interval, mark) {
         const root = phones.get(slot);
         if (!root) return;
-        destroyChart(slot);
+        const seq = (Number(chartMountSeq.get(slot)) || 0) + 1;
+        chartMountSeq.set(slot, seq);
         const host = root.querySelector("[data-chart]");
+        destroyChart(slot);
+        if (host) host.innerHTML = "";
         const badge = root.querySelector("[data-badge]");
-        host.innerHTML = "";
         if (badge) badge.textContent = `${baseAsset(symbol)} · ${chartTf(interval)}`;
         const tf = chartTf(interval);
         const bars = (await loadKlines(symbol, tf)) || [];
+        if (chartMountSeq.get(slot) !== seq) return;
+        if (!phones.get(slot) || phones.get(slot) !== root) return;
+        destroyChart(slot);
+        if (host) host.innerHTML = "";
         const lw = createLightweight(host, bars);
         const handle = {
+          host,
           symbol: String(symbol || "").toUpperCase(),
           interval: tf,
           bars,
@@ -1123,6 +1170,7 @@
           prevPrice: 0,
           chart: lw?.chart || null,
           series: lw?.series || null,
+          priceLine: null,
           canvas: null,
         };
         if (handle.series) {
@@ -1132,10 +1180,7 @@
               priceLineVisible: true,
               priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
             });
-            handle.chart.priceScale("right").applyOptions({
-              visible: true,
-              entireTextOnly: false,
-            });
+            applyRightPriceScale(handle.chart);
           } catch (_err) {}
         } else {
           const canvas = document.createElement("canvas");
@@ -1145,11 +1190,25 @@
           handle.canvas = canvas;
           drawCanvasKline(canvas, bars, handle.lastPrice, handle.prevPrice);
         }
-        ensurePriceTag(root);
+        if (chartMountSeq.get(slot) !== seq) {
+          try { handle.ro?.disconnect(); } catch (_err) {}
+          try { handle.chart?.remove(); } catch (_err) {}
+          if (host) host.innerHTML = "";
+          return;
+        }
         handle.ro = new ResizeObserver(() => {
           if (handle.chart) {
             const rect = host.getBoundingClientRect();
-            handle.chart.applyOptions({ width: Math.max(1, rect.width), height: Math.max(1, rect.height) });
+            handle.chart.applyOptions({
+              width: Math.max(1, rect.width),
+              height: Math.max(1, rect.height),
+              rightPriceScale: {
+                visible: true,
+                width: 65,
+                borderColor: "#2a2e39",
+              },
+            });
+            applyRightPriceScale(handle.chart);
           } else if (handle.canvas) {
             queueCanvas(slot);
           }
@@ -1386,13 +1445,14 @@
       function pumpChartQueue() {
         const gen = ++chartGen;
         let cursor = 0;
-        const step = () => {
+        const step = async () => {
           if (gen !== chartGen) return;
           cursor += 1;
           if (cursor > PAGE_SIZE) return;
           const botId = botIdOfSlot(cursor);
           const st = botState.get(botId);
-          if (st) mountChart(cursor, st.symbol, st.interval, st.mark || fallbackMark(st.symbol));
+          if (st) await mountChart(cursor, st.symbol, st.interval, st.mark || fallbackMark(st.symbol));
+          if (gen !== chartGen) return;
           setTimeout(step, 16);
         };
         step();
