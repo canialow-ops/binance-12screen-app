@@ -1,0 +1,1539 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NEEKO QUANT TRADING SYSTEM - Live Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+      html, body {
+        height: 100%;
+        background:
+          radial-gradient(ellipse at 0% 0%, rgba(34, 211, 238, 0.08), transparent 42%),
+          radial-gradient(ellipse at 100% 100%, rgba(245, 185, 66, 0.08), transparent 40%),
+          #030712;
+        color: #e2e8f0;
+      }
+      .wall {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-rows: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        height: calc(100vh - 56px);
+      }
+      .phone {
+        display: flex; flex-direction: column; min-height: 0;
+        border: 6px solid #07070a; border-radius: 26px; background: #05060a;
+        box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.25);
+        overflow: hidden;
+      }
+      .notch { margin: 4px auto 0; width: 34%; height: 8px; border-radius: 999px; background: #111; }
+      .screen {
+        display: flex; flex-direction: column; flex: 1; min-height: 0;
+        margin: 4px; border-radius: 16px; overflow: hidden; background: #060b14;
+      }
+      .bot-head {
+        flex: none; padding: 4px 7px 5px;
+        background: linear-gradient(90deg, #0b1220, #111827);
+        border-bottom: 1px solid rgba(34, 211, 238, 0.2);
+      }
+      .strat-tag {
+        display: inline-block; margin-top: 2px;
+        padding: 1px 5px; border-radius: 3px;
+        border: 1px solid rgba(245, 185, 66, 0.35);
+        background: rgba(245, 185, 66, 0.08);
+        color: #fbbf24; font-size: 9px; line-height: 1.35; letter-spacing: 0.04em;
+        white-space: nowrap;
+      }
+      .chart-box {
+        position: relative; flex: 1 1 56%; min-height: 0; overflow: hidden;
+        background: #070b12; pointer-events: none !important;
+      }
+      .chart-host { position: absolute; inset: 0; }
+      .chart-host canvas { display: block; }
+      .chart-badge {
+        position: absolute; left: 6px; top: 4px; z-index: 4;
+        font-size: 9px; letter-spacing: 0.08em; color: rgba(148, 163, 184, 0.7);
+        pointer-events: none;
+      }
+      .chart-logo-mask {
+        position: absolute; left: 0; bottom: 0; width: 72px; height: 22px;
+        background: #070b12; z-index: 5; pointer-events: none;
+      }
+      .bot-panel {
+        flex: 0 0 auto; display: flex; flex-direction: column;
+        padding: 4px 6px 5px; background: #07101c;
+        border-top: 1px solid rgba(245, 185, 66, 0.2);
+        font-size: 10px; line-height: 1.25; font-weight: normal;
+        font-variant-numeric: tabular-nums;
+      }
+      .bot-panel, .bot-panel * { font-size: 10px; font-weight: normal; }
+      .bot-panel [data-balance],
+      .bot-panel [data-pnl],
+      .bot-panel [data-roi] { font-size: 11px; }
+      .bot-panel .grid.grid-cols-2 > div { font-size: 9px; }
+      .log-label {
+        margin-top: 3px; font-size: 9px !important; font-weight: 600 !important;
+        letter-spacing: 0.16em; color: #64748b;
+      }
+      .log-box {
+        height: 78px; overflow: hidden; margin-top: 2px; padding: 4px 5px;
+        border-radius: 4px; background: #000; border: 1px solid rgba(34, 211, 238, 0.18);
+        font-size: 10px; line-height: 13px; color: #a5f3fc;
+      }
+      .log-box div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .up { color: #22c55e; }
+      .down { color: #f43f5e; }
+      .flash { animation: pulseTick 0.4s ease; }
+      .flash-up { animation: flashGreen 0.55s ease; }
+      .flash-down { animation: flashRed 0.55s ease; }
+      @keyframes pulseTick { from { background: rgba(34, 211, 238, 0.25); } to { background: transparent; } }
+      @keyframes flashGreen {
+        from { color: #86efac; background: rgba(34, 197, 94, 0.32); }
+        to { background: transparent; }
+      }
+      @keyframes flashRed {
+        from { color: #fda4af; background: rgba(244, 63, 94, 0.32); }
+        to { background: transparent; }
+      }
+      .topbar { display: flex; flex-direction: column; align-items: stretch; }
+      .group-bar {
+        display: flex; gap: 4px; padding: 3px 10px 6px;
+        overflow-x: auto; scrollbar-width: thin;
+        border-top: 1px solid rgba(34, 211, 238, 0.12);
+      }
+      .group-tab {
+        flex: none; cursor: pointer; white-space: nowrap;
+        padding: 3px 8px; border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        background: rgba(15, 23, 42, 0.65);
+        color: #94a3b8; font-size: 9px; letter-spacing: 0.04em; line-height: 1.2;
+      }
+      .group-tab.active {
+        border-color: rgba(245, 185, 66, 0.45);
+        background: rgba(245, 185, 66, 0.12);
+        color: #fde68a;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar border-b border-cyan-500/20">
+      <div class="flex h-[44px] items-center justify-between gap-3 px-4">
+        <div>
+          <h1 class="text-sm font-semibold tracking-wide text-amber-200">NEEKO QUANT TRADING SYSTEM</h1>
+          <p class="text-[10px] uppercase tracking-[0.22em] text-cyan-400/80">NEEKO ALGO DASHBOARD</p>
+        </div>
+        <div class="flex items-center gap-2 text-[11px]">
+          <span class="rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-amber-200">1,200 ACTIVE BOTS RUNNING</span>
+          <span id="link-status" class="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-emerald-300">LIVE CONNECTED · MARK PRICE 1s / LIGHTWEIGHT CHART</span>
+        </div>
+        <button id="logout" class="rounded-md bg-slate-800 px-3 py-1.5 text-xs hover:bg-slate-700">LOGOUT</button>
+      </div>
+      <nav id="group-bar" class="group-bar" aria-label="Bot groups"></nav>
+    </header>
+    <main id="wall" class="wall p-2"></main>
+    <script>
+      if (localStorage.getItem("auth_token") !== "logged_in") {
+        window.location.replace("/login.html");
+        throw new Error("unauthorized");
+      }
+      const PAGE_SIZE = 60;
+      const GROUP_COUNT = 20;
+      const BOT_COUNT = 1200;
+      const GROUP_LETTERS = "ABCDEFGHIJKLMNOPQRST";
+      const MAJOR_ASSETS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "BNB"];
+      const INTERVALS = ["1m", "3m"];
+      const INTERVAL_SEC = { "1m": 60, "3m": 180 };
+      const LEDGER_KEY = "NEEKO_LEDGER_v4";
+      const SMALL_IDS = new Set([5, 14, 25, 37, 49, 55]);
+      const STRATEGY_TAGS = [
+        "TTM Trend", "DQCNN Risk", "Liq Absorption", "ATR Volatility", "Rekblock Pivot", "Dynamic HFT",
+        "Fractal Breakout", "Low Risk Algo", "TTM Model", "HFT Liquidity", "Deep Accumulation", "Trend Following",
+        "EMA Cross", "VWAP Reversion", "Orderflow Sweep", "Gamma Scalp", "Basis Arb", "Funding Harvest",
+        "Momentum Pulse", "Mean Revert", "Breakout Fade", "Range Bound", "Vol Harvest", "Delta Neutral",
+        "Tape Reading", "Iceberg Hunt", "Spoof Filter", "Microstructure", "Session Drift", "Open Drive",
+        "Close Auction", "News Impulse", "Carry Overlay", "Grid Passive", "Maker Edge", "Taker Sweep",
+        "Stat Arb", "Pair Hedge", "Beta Neutral", "Trend Resume", "Pullback Buy", "Rally Fade",
+        "Squeeze Play", "Expansion Ride", "Compression Coil", "Liquidity Vacuum", "Stop Run", "Wick Rejection",
+        "Higher Highs", "Lower Lows", "Structure Hold", "Invalidation", "Risk Parity", "Kelly Fraction",
+        "Vol Target", "Drawdown Guard", "Circuit Breaker", "Inventory Skew", "Quote Tighten", "Quote Widen",
+      ];
+      const SIZE_DECIMALS = { BTC: 4, ETH: 4, BNB: 3, SOL: 3, XRP: 2, DOGE: 2, ADA: 2 };
+      const FIXED_MARKS = {
+        BTCUSDT: 77153.29,
+        ETHUSDT: 2397.73,
+        BNBUSDT: 691.53,
+        SOLUSDT: 100.26,
+        XRPUSDT: 1.3581,
+        DOGEUSDT: 0.08239,
+        ADAUSDT: 0.20531,
+      };
+
+      function fnv1a(str) {
+        let h = 2166136261;
+        for (let i = 0; i < str.length; i += 1) {
+          h ^= str.charCodeAt(i);
+          h = Math.imul(h, 16777619);
+        }
+        return h >>> 0;
+      }
+
+      function unixSec() {
+        return Math.floor(Date.now() / 1000);
+      }
+
+      function dayStartSec(t = unixSec()) {
+        return t - (t % 86400);
+      }
+
+      function utcYmdSec(t = unixSec()) {
+        const d = new Date(t * 1000);
+        return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+      }
+
+      function mulberry32(seed) {
+        let a = seed >>> 0;
+        return function mulberry32next() {
+          a |= 0;
+          a = (a + 0x6d2b79f5) | 0;
+          let t = Math.imul(a ^ (a >>> 15), 1 | a);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      function seedFrom(sec, botId, symbol, salt) {
+        return fnv1a(`${sec}|${botId || 0}|${String(symbol || "").toUpperCase()}|${salt || ""}`);
+      }
+
+      function tickRng(sec, botId, symbol, salt) {
+        return mulberry32(seedFrom(sec, botId, symbol, salt));
+      }
+
+      function seededUnit(sec, botId, symbol, salt) {
+        return tickRng(sec, botId, symbol, salt)();
+      }
+
+      function seededMark(st, t = unixSec()) {
+        const symbol = st && st.symbol;
+        const botId = st && st.id;
+        const base = fallbackMark(symbol);
+        const phase = (fnv1a(`${botId}|${symbol}|phase`) / 4294967295) * Math.PI * 2;
+        const u = seededUnit(t, botId, symbol, "mark");
+        const wave = Math.sin(t / 53 + phase) * 0.0018 + Math.sin(t / 17 + phase * 1.7) * 0.0009;
+        const tick = (u - 0.5) * 0.00025;
+        return roundPx(Math.max(base * 0.2, base * (1 + wave + tick)), symbol);
+      }
+
+      function chartTf(interval) {
+        return interval === "3m" ? "3m" : "1m";
+      }
+
+      function chartStepSec(interval) {
+        return INTERVAL_SEC[chartTf(interval)] || 60;
+      }
+
+      function chartSampleSec(tSec, interval) {
+        const step = chartStepSec(interval);
+        const grid = Math.min(60, step);
+        return tSec - (tSec % grid);
+      }
+
+      function barCloseAt(symbol, interval, tSec) {
+        const tf = chartTf(interval);
+        const t = chartSampleSec(tSec, tf);
+        const base = fallbackMark(symbol);
+        const phase = (fnv1a(`${symbol}|${tf}|wave`) / 4294967295) * Math.PI * 2;
+        const u = seededUnit(t, 0, symbol, `k|${tf}`);
+        const wave = Math.sin(t / 2100 + phase) * 0.012 + Math.sin(t / 540 + phase * 1.3) * 0.007 + Math.sin(t / 1800 + phase * 0.55) * 0.004;
+        const tick = (u - 0.5) * 0.0012;
+        return Math.max(base * 0.2, base * (1 + wave + tick));
+      }
+
+      function clockExposure(st, t = unixSec()) {
+        const u = seededUnit(Math.floor(t / 20), st.id, st.symbol, "exp");
+        return clampExposure(0.065 + u * 0.02);
+      }
+
+      function clockBalance(st, t = unixSec()) {
+        const start = dayStartSec(t);
+        const fracDay = Math.max(0, Math.min(1, (t - start) / 86400));
+        const rate = dailyRate(st, utcYmdSec(t));
+        const u = seededUnit(Math.floor(t / 20), st.id, st.symbol, "bal");
+        const expected = st.initialBalance * (1 + rate * fracDay * 1.01);
+        const span = st.initialBalance * rate * fracDay * 0.55;
+        const min = isSmallBot(st.id) ? 18427.35 : 50000;
+        return roundMoney(Math.max(min, expected + (u - 0.5) * 2 * span));
+      }
+
+      function canonicalEntry(st) {
+        const ref = seededMark(st, dayStartSec());
+        return roundPx(entryFromMark(ref, st.leverage, st.side, st.roiBias), st.symbol);
+      }
+
+      function roundMoney(n) {
+        return Math.round(Number(n) * 100) / 100;
+      }
+
+      function irregularMoney(lo, hi, botId, salt) {
+        const u = fnv1a(`NEEKO-bal|${botId}|${salt}`) / 4294967295;
+        const cents = 11 + (fnv1a(`NEEKO-cents|${botId}|${salt}`) % 89);
+        let x = lo + u * (hi - lo);
+        x = Math.floor(x) + cents / 100;
+        if (Math.abs(x - Math.round(x)) < 1e-9) x += 0.37;
+        if (Math.round(x) % 100 === 0 || Math.round(x) % 1000 === 0) x += (botId % 7) * 0.13 + 0.29;
+        x = roundMoney(Math.min(hi, Math.max(lo, x)));
+        if (x === Math.round(x)) x = roundMoney(x + 0.41);
+        return x;
+      }
+
+      function isSmallBot(id) {
+        return SMALL_IDS.has(((Number(id) - 1) % PAGE_SIZE) + 1);
+      }
+
+      function buildAccountBook() {
+        const book = {};
+        const largeIds = [];
+        let smallSum = 0;
+        for (let id = 1; id <= BOT_COUNT; id += 1) {
+          const asset = MAJOR_ASSETS[(id - 1) % MAJOR_ASSETS.length];
+          const small = isSmallBot(id);
+          const u = fnv1a(`NEEKO-exp|${id}`) / 4294967295;
+          const initialBalance = small
+            ? irregularMoney(18427.35, 93612.8, id, "small")
+            : irregularMoney(312480.19, 2450180.47, id, "large");
+          if (small) smallSum += initialBalance;
+          else largeIds.push(id);
+          book[id] = {
+            symbol: `${asset}USDT`,
+            interval: INTERVALS[(id - 1) % INTERVALS.length],
+            strategy: STRATEGY_TAGS[(id - 1) % STRATEGY_TAGS.length],
+            initialBalance,
+            exposure: 0.065 + u * 0.02,
+            side: fnv1a(`NEEKO-side|${id}`) % 2 === 0 ? "LONG" : "SHORT",
+            leverage: 5 + (fnv1a(`NEEKO-lev|${id}`) % 5),
+          };
+        }
+        const target = roundMoney(260000000 + (fnv1a("NEEKO-aum-1200") / 4294967295) * 34999999.17);
+        const cap = Math.min(295000000, Math.max(260000000, target));
+        let largeSum = 0;
+        for (const id of largeIds) largeSum += book[id].initialBalance;
+        const remain = Math.max(1000, cap - smallSum);
+        const factor = largeSum > 0 ? remain / largeSum : 1;
+        let used = smallSum;
+        for (let i = 0; i < largeIds.length; i += 1) {
+          const id = largeIds[i];
+          let next = roundMoney(book[id].initialBalance * factor);
+          if (next === Math.round(next)) next = roundMoney(next + ((id % 17) + 13) / 100);
+          if (i === largeIds.length - 1) next = roundMoney(Math.max(18427.35, cap - used));
+          if (next === Math.round(next)) next = roundMoney(next - 0.17);
+          book[id].initialBalance = next;
+          used = roundMoney(used + next);
+        }
+        return book;
+      }
+
+      const ACCOUNT_BOOK = buildAccountBook();
+      let groupIndex = 0;
+      const wall = document.getElementById("wall");
+      wall.style.gridTemplateRows = `repeat(${Math.ceil(PAGE_SIZE / 6)}, minmax(340px, 1fr))`;
+      wall.style.height = "auto";
+      wall.style.minHeight = "calc(100vh - 90px)";
+      document.documentElement.style.overflowY = "auto";
+      document.body.style.overflowY = "auto";
+
+      function botIdOfSlot(slot) {
+        return groupIndex * PAGE_SIZE + slot;
+      }
+      function slotOfBot(botId) {
+        const start = groupIndex * PAGE_SIZE + 1;
+        if (botId < start || botId > start + PAGE_SIZE - 1) return 0;
+        return botId - start + 1;
+      }
+
+      const phones = new Map();
+      const botState = new Map();
+      const charts = new Map();
+      const klineCache = new Map();
+      const klineInflight = new Map();
+      let slotsCache = [];
+      let marketWs;
+      let logsStarted = false;
+      let tradeStarted = false;
+      let markPulseStarted = false;
+      let lastWsAt = 0;
+      let ledgerCache = { bots: {} };
+      let chartMountCursor = 0;
+      let dirtyCanvas = new Set();
+      let canvasRaf = 0;
+      let reloadStarted = false;
+      const reloadingIds = new Set();
+
+      function injectReloadStyles() {
+        if (document.getElementById("neeko-reload-style")) return;
+        const sheet = document.createElement("style");
+        sheet.id = "neeko-reload-style";
+        sheet.textContent = `
+          @keyframes neekoSpin { to { transform: rotate(360deg); } }
+          @keyframes neekoPulseTxt { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
+        `;
+        document.head.appendChild(sheet);
+      }
+
+      function attachReloadMask(el) {
+        if (el.querySelector("[data-reload-mask]")) return;
+        el.style.position = "relative";
+        const mask = document.createElement("div");
+        mask.setAttribute("data-reload-mask", "");
+        mask.style.cssText = [
+          "position:absolute",
+          "inset:0",
+          "z-index:30",
+          "display:flex",
+          "flex-direction:column",
+          "align-items:center",
+          "justify-content:center",
+          "gap:10px",
+          "background:rgba(2,6,14,0.82)",
+          "backdrop-filter:blur(2px)",
+          "pointer-events:none",
+          "opacity:0",
+          "visibility:hidden",
+          "transition:opacity 0.35s ease, visibility 0.35s ease",
+        ].join(";");
+        const spin = document.createElement("div");
+        spin.style.cssText = [
+          "width:18px",
+          "height:18px",
+          "border:2px solid rgba(34,211,238,0.18)",
+          "border-top-color:#22d3ee",
+          "border-radius:50%",
+          "animation:neekoSpin 0.7s linear infinite",
+        ].join(";");
+        const label = document.createElement("div");
+        label.setAttribute("data-reload-text", "");
+        label.style.cssText = [
+          "font-size:10px",
+          "letter-spacing:0.16em",
+          "color:#67e8f9",
+          "font-variant:small-caps",
+          "animation:neekoPulseTxt 1.4s ease-in-out infinite",
+        ].join(";");
+        label.textContent = "[SYSTEM RELOADING]";
+        mask.appendChild(spin);
+        mask.appendChild(label);
+        el.appendChild(mask);
+      }
+
+      function ymd(now = new Date()) {
+        return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      }
+
+      function dayUnit(botId, salt = "") {
+        return fnv1a(`NEEKO-day|${ymd()}|bot-${botId}|${salt}`) / 4294967295;
+      }
+
+      function dateSeedRoi(botId, now = new Date()) {
+        const dayIndex = Math.floor(now.getTime() / 86400000);
+        const unique = fnv1a(`NEEKO|${dayIndex}|bot-${botId}`);
+        const unit = unique / 4294967295;
+        const wave = Math.sin(dayIndex * (0.097 + botId * 0.013) + botId * 1.7) * (3.8 + (botId % 12) * 0.21);
+        const trend = (((dayIndex + botId * 17) % 367) / 367) * 6.4 - 1.8;
+        const roi = (unit - 0.28) * 21.6 + wave + trend * 0.35;
+        return Math.round(roi * 100) / 100;
+      }
+
+      function dayBook(botId, book) {
+        const t = dayUnit(botId, "run");
+        const minutes = 190 + Math.floor(t * 1180);
+        const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
+        const mm = String(minutes % 60).padStart(2, "0");
+        return {
+          initialBalance: Number(book.initialBalance),
+          exposure: clampExposure(book.exposure),
+          runtimeLabel: `Live session ${hh}h ${mm}m`,
+          roiBias: dateSeedRoi(botId),
+        };
+      }
+
+      function safeSlot(slot) {
+        const id = Number(slot?.id) || 0;
+        const book = ACCOUNT_BOOK[id] || ACCOUNT_BOOK[1];
+        const day = dayBook(id, book);
+        const leverage = Number(book.leverage);
+        const side = String(book.side || "LONG").toUpperCase() === "SHORT" ? "SHORT" : "LONG";
+        const interval = INTERVALS.includes(book.interval) ? book.interval : "1m";
+        return {
+          id,
+          name: `NEEKO Bot #${String(id).padStart(4, "0")}`,
+          symbol: String(book.symbol).toUpperCase(),
+          interval,
+          strategy: book.strategy,
+          leverage: Number.isFinite(leverage) && leverage > 0 ? leverage : 8,
+          initialBalance: day.initialBalance,
+          side,
+          exposure: day.exposure,
+          roiBias: day.roiBias,
+          runtimeLabel: day.runtimeLabel,
+          dayKey: ymd(),
+        };
+      }
+
+      function entryFromMark(mark, leverage, side, roiPct) {
+        const r = roiPct / 100 / leverage;
+        if (side === "LONG") return mark / (1 + r);
+        return mark * (1 + r);
+      }
+
+      function liqFromEntry(entry, side) {
+        return side === "LONG" ? entry * 0.85 : entry * 1.15;
+      }
+
+      function sizeDigits(symbol) {
+        return SIZE_DECIMALS[baseAsset(symbol)] || 3;
+      }
+
+      function naturalSize(raw, symbol, botId) {
+        const digits = sizeDigits(symbol);
+        const q = 10 ** digits;
+        if (!Number.isFinite(raw) || raw <= 0) return 1 / q;
+        let n = Math.round(raw * q) / q;
+        const salt = (fnv1a(`NEEKO-size|${botId}|${baseAsset(symbol)}`) % 89) + 11;
+        const units = Math.round(n * q);
+        if (units % 100 === 0 || units % 10 === 0) n = (units + (salt % 9) + 1) / q;
+        return n;
+      }
+
+      function roundPx(px, symbol) {
+        const x = Number(px);
+        if (!Number.isFinite(x)) return 0;
+        const asset = baseAsset(symbol);
+        if (asset === "BTC" || x >= 1000) return Math.round(x * 100) / 100;
+        if (asset === "ETH" || x >= 100) return Math.round(x * 100) / 100;
+        if (x >= 1) return Math.round(x * 10000) / 10000;
+        return Math.round(x * 1e6) / 1e6;
+      }
+
+      function dirOf(st) {
+        return st.side === "SHORT" ? -1 : 1;
+      }
+
+      function walletOf(st) {
+        return Number(st.baseBalance) > 0 ? st.baseBalance : st.initialBalance;
+      }
+
+      function sizeBand(st) {
+        const equity = walletOf(st);
+        const mark = Number(st.mark) || 1;
+        return {
+          lo: (equity * 0.065) / mark,
+          hi: (equity * 0.085) / mark,
+        };
+      }
+
+      function clampSizeToBand(st, size) {
+        const { lo, hi } = sizeBand(st);
+        return naturalSize(Math.min(hi, Math.max(lo, size)), st.symbol, st.id);
+      }
+
+      function notionalPct(st) {
+        const w = walletOf(st);
+        return w > 0 ? (st.size * st.mark) / w : 0;
+      }
+
+      function clampExposure(x) {
+        const n = Number(x);
+        if (!Number.isFinite(n)) return 0.075;
+        return Math.min(0.085, Math.max(0.065, n));
+      }
+
+      function monthlyBand(strategy) {
+        const s = String(strategy || "");
+        if (/HFT|Maker Edge|Taker Sweep|Gamma Scalp|Dynamic HFT/i.test(s)) return [0.1, 0.12];
+        if (/Low Risk|DQCNN|ATR|Deep Accumulation|Risk Parity|Drawdown|Circuit|Vol Target|Kelly/i.test(s)) return [0.05, 0.07];
+        return [0.08, 0.1];
+      }
+
+      function dailyRate(st, dateStr = ymd()) {
+        const [lo, hi] = monthlyBand(st.strategy);
+        const u = fnv1a(`NEEKO-dayret|${dateStr}|${st.id}|${st.strategy}`) / 4294967295;
+        const monthly = lo + u * (hi - lo);
+        return Math.min(0.0038, Math.max(0.0016, monthly / 30));
+      }
+
+      function loadLedger() {
+        try {
+          const raw = localStorage.getItem(LEDGER_KEY);
+          const data = raw ? JSON.parse(raw) : null;
+          if (data && data.bots && typeof data.bots === "object") {
+            ledgerCache = data;
+            return data;
+          }
+        } catch (_err) {}
+        ledgerCache = { bots: {} };
+        return ledgerCache;
+      }
+
+      let persistTimer = 0;
+      function flushLedger() {
+        persistTimer = 0;
+        try {
+          localStorage.setItem(LEDGER_KEY, JSON.stringify(ledgerCache));
+        } catch (_err) {}
+      }
+
+      function persistBot(st) {
+        if (!st || !st.id) return;
+        ledgerCache.bots[st.id] = {
+          id: st.id,
+          symbol: st.symbol,
+          baseBalance: roundMoney(walletOf(st)),
+          entry: Number(st.entry) || 0,
+          size: Number(st.size) || 0,
+          exposure: clampExposure(st.exposure),
+          lastYmd: ymd(),
+          lastSettleAt: Number(st.lastSettleAt) || Date.now(),
+        };
+        if (!persistTimer) persistTimer = setTimeout(flushLedger, 250);
+      }
+
+      function ymdToUtc(dateStr) {
+        const [y, m, d] = String(dateStr || "").split("-").map(Number);
+        if (!y || !m || !d) return null;
+        return Date.UTC(y, m - 1, d);
+      }
+
+      function compoundMissedDays(st, balance, lastYmd) {
+        let next = Number(balance);
+        if (!(next > 0)) return next;
+        const from = ymdToUtc(lastYmd);
+        const today = ymdToUtc(ymd());
+        if (from == null || today == null || today <= from) return roundMoney(next);
+        const days = Math.min(370, Math.round((today - from) / 86400000));
+        for (let i = 1; i <= days; i += 1) {
+          const stamp = new Date(from + i * 86400000);
+          next *= 1 + dailyRate(st, ymd(stamp));
+        }
+        return roundMoney(next);
+      }
+
+      function hydrateFromLedger(st) {
+        const saved = ledgerCache.bots[st.id];
+        if (!saved) return false;
+        if (saved.symbol && String(saved.symbol).toUpperCase() !== String(st.symbol).toUpperCase()) return false;
+        const bal = Number(saved.baseBalance);
+        if (!(bal > 0)) return false;
+        st.baseBalance = compoundMissedDays(st, bal, saved.lastYmd);
+        st.lastSettleAt = Number(saved.lastSettleAt) || Date.now();
+        return true;
+      }
+
+      function lockedSize(st) {
+        const mark = Number(st.mark);
+        const equity = walletOf(st);
+        if (!(mark > 0) || !(equity > 0)) return 0;
+        st.exposure = clampExposure(st.exposure);
+        return (equity * st.exposure) / mark;
+      }
+
+      function resyncSize(st) {
+        const mark = Number(st.mark);
+        if (!(mark > 0)) return;
+        st.size = clampSizeToBand(st, lockedSize(st));
+        if (st.entry) st.liq = liqFromEntry(st.entry, st.side);
+        refreshDerived(st);
+      }
+
+      function enforceBand(st) {
+        const pct = notionalPct(st);
+        if (pct > 0.085 || pct < 0.065) resyncSize(st);
+      }
+
+      function theoreticalPnl(st) {
+        return (Number(st.mark) - Number(st.entry)) * Number(st.size) * dirOf(st);
+      }
+
+      function refreshDerived(st) {
+        const pnl = theoreticalPnl(st);
+        const margin = (st.size * st.entry) / (st.leverage || 8);
+        st.pnl = pnl;
+        st.margin = margin;
+        st.roi = margin > 0 ? (pnl / margin) * 100 : 0;
+      }
+
+      function seedBooks(st) {
+        hydrateFromLedger(st);
+        st.baseBalance = clockBalance(st);
+        st.exposure = clockExposure(st);
+        resyncSize(st);
+        persistBot(st);
+      }
+
+      function fmt(n, digits) {
+        const x = Number(n);
+        if (!Number.isFinite(x)) return "--";
+        if (digits != null) {
+          return x.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+        }
+        if (Math.abs(x) >= 1000) return x.toLocaleString("en-US", { maximumFractionDigits: 2 });
+        if (Math.abs(x) >= 1) return x.toLocaleString("en-US", { maximumFractionDigits: 4 });
+        return x.toLocaleString("en-US", { maximumFractionDigits: 6 });
+      }
+
+      function baseAsset(symbol) {
+        const s = String(symbol || "").toUpperCase();
+        const raw = s.endsWith("USDT") ? s.slice(0, -4) : s.endsWith("BUSD") ? s.slice(0, -4) : s.endsWith("USDC") ? s.slice(0, -4) : s;
+        return MAJOR_ASSETS.includes(raw) ? raw : "BTC";
+      }
+
+      function fmtSize(size, symbol) {
+        const asset = baseAsset(symbol);
+        const n = Number(size);
+        const digits = sizeDigits(symbol);
+        if (!Number.isFinite(n) || n <= 0) return `-- ${asset}`;
+        return `${n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })} ${asset}`;
+      }
+
+      function bumpFlash(el, kind, extra) {
+        if (!el) return;
+        const base = extra || "";
+        el.className = base;
+        if (!kind) return;
+        el.classList.remove("flash-up", "flash-down", "flash");
+        void el.offsetWidth;
+        el.classList.add(kind);
+      }
+
+      function nowStamp() {
+        return new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      }
+
+      function mapKlines(rows) {
+        if (!Array.isArray(rows)) return [];
+        return rows
+          .map((row) => ({
+            time: Math.floor(Number(row[0]) / 1000),
+            open: Number(row[1]),
+            high: Number(row[2]),
+            low: Number(row[3]),
+            close: Number(row[4]),
+          }))
+          .filter((bar) => Number.isFinite(bar.time) && Number.isFinite(bar.open) && Number.isFinite(bar.close))
+          .slice(-180);
+      }
+
+      function syntheticKlines(symbol, interval) {
+        const tf = chartTf(interval);
+        const step = chartStepSec(tf);
+        const count = 160;
+        const now = unixSec();
+        const aligned = now - (now % step);
+        const bars = [];
+        for (let i = count - 1; i >= 0; i -= 1) {
+          const t0 = aligned - i * step;
+          const tEnd = i === 0 ? now : t0 + step - 1;
+          const open = barCloseAt(symbol, tf, t0);
+          const close = barCloseAt(symbol, tf, tEnd);
+          let high = Math.max(open, close);
+          let low = Math.min(open, close);
+          for (let s = t0; s <= tEnd; s += 60) {
+            const px = barCloseAt(symbol, tf, s);
+            if (px > high) high = px;
+            if (px < low) low = px;
+          }
+          bars.push({ time: t0, open, high, low, close });
+        }
+        return bars;
+      }
+
+      function drawCanvasKline(canvas, bars) {
+        const ctx = canvas.getContext("2d");
+        if (!ctx || !bars.length) return;
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth || 1;
+        const h = canvas.clientHeight || 1;
+        canvas.width = Math.floor(w * dpr);
+        canvas.height = Math.floor(h * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = "#070b12";
+        ctx.fillRect(0, 0, w, h);
+        let min = Infinity;
+        let max = -Infinity;
+        for (const bar of bars) {
+          min = Math.min(min, bar.low);
+          max = Math.max(max, bar.high);
+        }
+        const pad = (max - min) * 0.06 || min * 0.01;
+        min -= pad;
+        max += pad;
+        const span = max - min || 1;
+        const n = bars.length;
+        const slot = w / n;
+        const bodyW = Math.max(0.6, Math.min(2.4, slot * 0.62));
+        for (let i = 0; i < n; i += 1) {
+          const bar = bars[i];
+          const x = i * slot + slot / 2;
+          const yH = ((max - bar.high) / span) * h;
+          const yL = ((max - bar.low) / span) * h;
+          const yO = ((max - bar.open) / span) * h;
+          const yC = ((max - bar.close) / span) * h;
+          const up = bar.close >= bar.open;
+          ctx.strokeStyle = up ? "#26a69a" : "#ef5350";
+          ctx.fillStyle = up ? "#26a69a" : "#ef5350";
+          ctx.beginPath();
+          ctx.moveTo(x, yH);
+          ctx.lineTo(x, yL);
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          const top = Math.min(yO, yC);
+          const bh = Math.max(1, Math.abs(yC - yO));
+          ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
+        }
+      }
+
+      function queueCanvas(id) {
+        dirtyCanvas.add(id);
+        if (canvasRaf) return;
+        canvasRaf = requestAnimationFrame(() => {
+          canvasRaf = 0;
+          for (const cid of dirtyCanvas) {
+            const handle = charts.get(cid);
+            if (handle?.canvas) drawCanvasKline(handle.canvas, handle.bars);
+          }
+          dirtyCanvas.clear();
+        });
+      }
+
+      function destroyChart(id) {
+        const handle = charts.get(id);
+        if (!handle) return;
+        try { handle.ro?.disconnect(); } catch (_err) {}
+        try { handle.chart?.remove(); } catch (_err) {}
+        charts.delete(id);
+      }
+
+      function createLightweight(host, bars) {
+        if (typeof LightweightCharts === "undefined" || !LightweightCharts.createChart) return null;
+        try {
+          const chart = LightweightCharts.createChart(host, {
+            layout: {
+              background: { type: "solid", color: "#070b12" },
+              textColor: "rgba(100, 116, 139, 0.55)",
+              fontSize: 8,
+              attributionLogo: false,
+            },
+            grid: {
+              vertLines: { color: "rgba(148,163,184,0.07)" },
+              horzLines: { color: "rgba(148,163,184,0.07)" },
+            },
+            rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.04, bottom: 0.08 } },
+            timeScale: {
+              visible: false,
+              borderVisible: false,
+              timeVisible: false,
+              secondsVisible: false,
+              barSpacing: 1.8,
+              minBarSpacing: 0.55,
+              rightOffset: 2,
+              fixLeftEdge: true,
+              fixRightEdge: true,
+            },
+            crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },
+            handleScroll: false,
+            handleScale: false,
+            kineticScroll: { mouse: false, touch: false },
+          });
+          const series = chart.addCandlestickSeries({
+            upColor: "#26a69a",
+            downColor: "#ef5350",
+            borderVisible: false,
+            wickUpColor: "#26a69a",
+            wickDownColor: "#ef5350",
+          });
+          series.setData(bars);
+          const rect = host.getBoundingClientRect();
+          chart.applyOptions({ width: Math.max(1, rect.width), height: Math.max(1, rect.height) });
+          chart.timeScale().fitContent();
+          return { chart, series };
+        } catch (_err) {
+          return null;
+        }
+      }
+
+      async function loadKlines(symbol, interval) {
+        const key = `${symbol}|${interval}`;
+        if (klineCache.has(key)) return klineCache.get(key).slice();
+        if (klineInflight.has(key)) return klineInflight.get(key);
+        const job = (async () => {
+          try {
+            const res = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=180`, { credentials: "include" });
+            const json = await res.json();
+            const bars = mapKlines(json.klines);
+            if (bars.length) {
+              klineCache.set(key, bars);
+              return bars.slice();
+            }
+          } catch (_err) {}
+          try {
+            const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=180`);
+            const rows = await res.json();
+            const bars = mapKlines(rows);
+            if (bars.length) {
+              klineCache.set(key, bars);
+              return bars.slice();
+            }
+          } catch (_err) {}
+          return [];
+        })();
+        klineInflight.set(key, job);
+        try {
+          return await job;
+        } finally {
+          klineInflight.delete(key);
+        }
+      }
+
+      async function mountChart(slot, symbol, interval, mark) {
+        const root = phones.get(slot);
+        if (!root) return;
+        destroyChart(slot);
+        const host = root.querySelector("[data-chart]");
+        const badge = root.querySelector("[data-badge]");
+        host.innerHTML = "";
+        if (badge) badge.textContent = `${baseAsset(symbol)} · ${chartTf(interval)}`;
+        const bars = syntheticKlines(symbol, interval);
+        const lw = null;
+        const handle = {
+          symbol,
+          interval,
+          bars,
+          last: bars[bars.length - 1],
+          chart: lw?.chart || null,
+          series: lw?.series || null,
+          canvas: null,
+        };
+        if (!lw) {
+          const canvas = document.createElement("canvas");
+          canvas.style.width = "100%";
+          canvas.style.height = "100%";
+          host.appendChild(canvas);
+          handle.canvas = canvas;
+          drawCanvasKline(canvas, bars);
+        }
+        handle.ro = new ResizeObserver(() => {
+          if (handle.chart) {
+            const rect = host.getBoundingClientRect();
+            handle.chart.applyOptions({ width: Math.max(1, rect.width), height: Math.max(1, rect.height) });
+          } else if (handle.canvas) {
+            queueCanvas(slot);
+          }
+        });
+        handle.ro.observe(host);
+        charts.set(slot, handle);
+      }
+
+      function applyKlineBar(botId, bar, closed) {
+        const slot = slotOfBot(botId);
+        if (!slot) return;
+        const handle = charts.get(slot);
+        if (!handle || !bar) return;
+        const last = handle.last;
+        if (!last || bar.time > last.time) {
+          handle.bars.push(bar);
+          if (handle.bars.length > 200) handle.bars.shift();
+          handle.last = bar;
+        } else {
+          handle.last = { ...last, ...bar, time: last.time };
+          handle.bars[handle.bars.length - 1] = handle.last;
+        }
+        if (handle.series) {
+          try { handle.series.update(handle.last); } catch (_err) {}
+          if (closed) handle.chart?.timeScale().scrollToRealTime();
+        } else if (handle.canvas) {
+          queueCanvas(slot);
+        }
+      }
+
+      function phoneTemplate(id) {
+        const el = document.createElement("article");
+        el.className = "phone";
+        el.innerHTML = `
+          <div class="notch"></div>
+          <div class="screen">
+            <div class="bot-head">
+              <div class="flex items-start justify-between gap-1">
+                <div class="min-w-0">
+                  <div class="truncate text-[11px] font-semibold tracking-wide text-cyan-200" data-headline>NEEKO Bot #${id}</div>
+                  <div class="mt-0.5 truncate text-[9px] text-slate-500" data-run></div>
+                </div>
+                <div class="strat-tag" data-tag>[TTM Trend]</div>
+              </div>
+            </div>
+            <div class="chart-box">
+              <div class="chart-badge" data-badge></div>
+              <div class="chart-host" data-chart></div>
+              <div class="chart-logo-mask"></div>
+            </div>
+            <div class="bot-panel">
+              <div class="flex items-center justify-between gap-2">
+                <div>
+                  <div class="text-slate-500">Total Balance</div>
+                  <div class="text-white" data-balance>Syncing...</div>
+                </div>
+                <div class="text-right">
+                  <div class="text-slate-500">Unrealized PnL</div>
+                  <div data-pnl>$--</div>
+                  <div data-roi>--%</div>
+                </div>
+              </div>
+              <div class="mt-1 tracking-widest text-slate-500">POSITIONS</div>
+              <div class="grid grid-cols-2 gap-x-2 gap-y-0.5">
+                <div class="text-slate-500">Avg Entry<div class="text-slate-100" data-entry>--</div></div>
+                <div class="text-slate-500">Mark Price<div class="text-cyan-300" data-mark>--</div></div>
+                <div class="text-slate-500">Liq Price<div class="text-amber-300" data-liq>--</div></div>
+                <div class="text-slate-500">Position Size <span data-unit></span><div class="text-slate-100" data-size>--</div></div>
+              </div>
+              <div class="log-label">LIVE EXECUTION LOG</div>
+              <div class="log-box" data-log></div>
+            </div>
+          </div>`;
+        attachReloadMask(el);
+        return el;
+      }
+
+      function pushLog(id, text, stamp) {
+        const st = botState.get(id);
+        if (!st) return;
+        const ts = stamp || nowStamp();
+        st.logs = st.logs || [];
+        st.logs.push(`[${ts}] ${text}`);
+        st.logs = st.logs.slice(-6);
+        const root = phones.get(slotOfBot(id));
+        if (!root) return;
+        const box = root.querySelector("[data-log]");
+        box.innerHTML = st.logs
+          .map((line, i) => `<div class="${i === st.logs.length - 1 ? "flash" : ""}">${line}</div>`)
+          .join("");
+        box.scrollTop = box.scrollHeight;
+      }
+
+      function fallbackMark(symbol) {
+        const px = Number(FIXED_MARKS[String(symbol || "").toUpperCase()]);
+        return Number.isFinite(px) && px > 0 ? px : Number(FIXED_MARKS.BTCUSDT);
+      }
+
+      function applyMark(st, px) {
+        if (!st || !Number.isFinite(px) || px <= 0) return false;
+        const next = roundPx(px, st.symbol);
+        if (st.mark === next) return false;
+        const prevPnl = st.pnl;
+        st.mark = next;
+        if (!st.entry) {
+          st.entry = canonicalEntry(st);
+          st.liq = liqFromEntry(st.entry, st.side);
+          seedBooks(st);
+          st.seeded = true;
+          refreshDerived(st);
+          return true;
+        }
+        refreshDerived(st);
+        enforceBand(st);
+        st.lastPnlDir = st.pnl > prevPnl + 0.01 ? 1 : st.pnl < prevPnl - 0.01 ? -1 : 0;
+        return true;
+      }
+
+      function syncClock(st, t = unixSec()) {
+        if (!st) return;
+        st.mark = seededMark(st, t);
+        st.baseBalance = clockBalance(st, t);
+        st.exposure = clockExposure(st, t);
+        if (!(Number(st.entry) > 0)) st.entry = canonicalEntry(st);
+        if (st.entry) st.liq = liqFromEntry(st.entry, st.side);
+        resyncSize(st);
+        refreshDerived(st);
+        enforceBand(st);
+      }
+
+      function seedPosition(st) {
+        if (st.seeded && st.entry && st.size) {
+          syncClock(st);
+          return;
+        }
+        st.entry = canonicalEntry(st);
+        st.liq = liqFromEntry(st.entry, st.side);
+        seedBooks(st);
+        syncClock(st);
+        st.seeded = true;
+        persistBot(st);
+      }
+
+      function paint(id, flags = {}) {
+        const root = phones.get(slotOfBot(id));
+        const st = botState.get(id);
+        if (!root || !st) return;
+        root.querySelector("[data-headline]").textContent = `${st.name} ${st.symbol}`;
+        root.querySelector("[data-tag]").textContent = `[${st.strategy}]`;
+        const runEl = root.querySelector("[data-run]");
+        if (runEl) runEl.textContent = st.runtimeLabel || "";
+        seedPosition(st);
+        if (!st.mark || !st.entry) return;
+        refreshDerived(st);
+        const pnl = st.pnl;
+        const roi = st.roi;
+        const tone = pnl >= 0 ? "up" : "down";
+        const muted = reloadingIds.has(id);
+        const pnlKind = muted ? "" : flags.pnlDir > 0 ? "flash-up" : flags.pnlDir < 0 ? "flash-down" : "";
+        const balKind = muted ? "" : flags.balDir > 0 ? "flash-up" : flags.balDir < 0 ? "flash-down" : "";
+        const sizeKind = muted ? "" : flags.sizeChanged ? (flags.sizeDir >= 0 ? "flash-up" : "flash-down") : "";
+        const balEl = root.querySelector("[data-balance]");
+        const pnlEl = root.querySelector("[data-pnl]");
+        const roiEl = root.querySelector("[data-roi]");
+        const sizeEl = root.querySelector("[data-size]");
+        const markEl = root.querySelector("[data-mark]");
+        balEl.textContent = `$${fmt(st.baseBalance, 2)} USDT`;
+        bumpFlash(balEl, balKind, "text-white");
+        pnlEl.textContent = `${pnl >= 0 ? "+" : ""}$${fmt(Math.abs(pnl), 2)}`;
+        bumpFlash(pnlEl, pnlKind, `leading-none ${tone}`);
+        roiEl.textContent = `${roi >= 0 ? "+" : ""}${roi.toFixed(2)}%`;
+        bumpFlash(roiEl, pnlKind, `leading-none ${tone}`);
+        markEl.textContent = fmt(st.mark);
+        markEl.className = "text-cyan-300";
+        const entryEl = root.querySelector("[data-entry]");
+        const liqEl = root.querySelector("[data-liq]");
+        entryEl.textContent = fmt(st.entry);
+        liqEl.textContent = fmt(st.liq);
+        entryEl.className = "text-slate-100";
+        liqEl.className = "text-amber-300";
+        const unit = baseAsset(st.symbol);
+        const unitEl = root.querySelector("[data-unit]");
+        if (unitEl) unitEl.textContent = `(${unit})`;
+        sizeEl.textContent = fmtSize(st.size, st.symbol);
+        bumpFlash(sizeEl, sizeKind, "text-slate-100");
+        const box = root.querySelector("[data-log]");
+        if (box) {
+          const lines = st.logs || [];
+          box.innerHTML = lines
+            .map((line, i) => `<div class="${i === lines.length - 1 ? "flash" : ""}">${line}</div>`)
+            .join("");
+          box.scrollTop = box.scrollHeight;
+        }
+      }
+
+      function localSlots() {
+        return Array.from({ length: BOT_COUNT }, (_, i) => ({ id: i + 1 }));
+      }
+
+      let chartGen = 0;
+      function pumpChartQueue() {
+        const gen = ++chartGen;
+        let cursor = 0;
+        const step = () => {
+          if (gen !== chartGen) return;
+          cursor += 1;
+          if (cursor > PAGE_SIZE) return;
+          const botId = botIdOfSlot(cursor);
+          const st = botState.get(botId);
+          if (st) mountChart(cursor, st.symbol, st.interval, st.mark || fallbackMark(st.symbol));
+          setTimeout(step, 16);
+        };
+        step();
+      }
+
+      function highlightGroupTabs() {
+        document.querySelectorAll(".group-tab").forEach((btn, i) => {
+          btn.classList.toggle("active", i === groupIndex);
+        });
+      }
+
+      function selectGroup(g) {
+        if (g === groupIndex || g < 0 || g >= GROUP_COUNT) return;
+        groupIndex = g;
+        reloadingIds.clear();
+        for (const el of phones.values()) {
+          const mask = el.querySelector("[data-reload-mask]");
+          if (!mask) continue;
+          mask.style.opacity = "0";
+          mask.style.visibility = "hidden";
+        }
+        highlightGroupTabs();
+        for (let slot = 1; slot <= PAGE_SIZE; slot += 1) {
+          const botId = botIdOfSlot(slot);
+          const st = botState.get(botId);
+          if (!st) continue;
+          seedPosition(st);
+          paint(botId);
+        }
+        pumpChartQueue();
+      }
+
+      function buildGroupBar() {
+        const bar = document.getElementById("group-bar");
+        if (!bar) return;
+        bar.innerHTML = "";
+        for (let g = 0; g < GROUP_COUNT; g += 1) {
+          const start = g * PAGE_SIZE + 1;
+          const end = start + PAGE_SIZE - 1;
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "group-tab" + (g === 0 ? " active" : "");
+          btn.textContent = `Group ${GROUP_LETTERS[g]} (${start}-${end})`;
+          btn.addEventListener("click", () => selectGroup(g));
+          bar.appendChild(btn);
+        }
+      }
+
+      async function applyConfig(slots) {
+        slotsCache = (slots || localSlots()).map(safeSlot);
+        if (slotsCache.length !== BOT_COUNT) slotsCache = localSlots().map(safeSlot);
+        for (let index = 0; index < slotsCache.length; index += 1) {
+          const slot = slotsCache[index];
+          const prev = botState.get(slot.id);
+          const changed = !prev || prev.symbol !== slot.symbol || prev.interval !== slot.interval || prev.strategy !== slot.strategy;
+          if (changed) {
+            botState.set(slot.id, {
+              ...slot,
+              entry: null,
+              mark: 0,
+              size: 0,
+              seeded: false,
+              baseBalance: slot.initialBalance,
+              lastSettleAt: Date.now(),
+              logs: prev?.logs || [],
+            });
+          } else {
+            const keepBal = prev.baseBalance;
+            const keepEntry = prev.entry;
+            const keepSize = prev.size;
+            const keepSeeded = prev.seeded;
+            const keepSettle = prev.lastSettleAt;
+            const keepExp = prev.exposure;
+            const keepLiq = prev.liq;
+            Object.assign(prev, slot);
+            prev.baseBalance = keepBal;
+            prev.entry = keepEntry;
+            prev.size = keepSize;
+            prev.seeded = keepSeeded;
+            prev.lastSettleAt = keepSettle;
+            prev.exposure = keepExp;
+            prev.liq = keepLiq;
+          }
+          const st = botState.get(slot.id);
+          seedPosition(st);
+          if (slotOfBot(slot.id)) {
+            paint(slot.id);
+            if (changed) pushLog(slot.id, composeExecLog(botState.get(slot.id), "open"));
+          }
+        }
+        pumpChartQueue();
+        connectMarket();
+        startLogEngine();
+        startTradeEngine();
+        startMarkPulse();
+        startReloadEngine();
+      }
+
+      function connectMarket() {
+        if (marketWs) {
+          marketWs.onclose = null;
+          marketWs.close();
+        }
+        const parts = [];
+        const seen = new Set();
+        for (const slot of slotsCache) {
+          const s = slot.symbol.toLowerCase();
+          const markStream = `${s}@markPrice@1s`;
+          const klineStream = `${s}@kline_${slot.interval}`;
+          if (!seen.has(markStream)) {
+            parts.push(markStream);
+            seen.add(markStream);
+          }
+          if (!seen.has(klineStream)) {
+            parts.push(klineStream);
+            seen.add(klineStream);
+          }
+        }
+        if (!parts.length) return;
+        marketWs = new WebSocket(`wss://fstream.binance.com/stream?streams=${parts.join("/")}`);
+        marketWs.onopen = () => {
+          lastWsAt = Date.now();
+          document.getElementById("link-status").textContent = "LIVE CONNECTED · MARK PRICE 1s / LIGHTWEIGHT CHART";
+        };
+        marketWs.onmessage = (event) => {
+          lastWsAt = Date.now();
+          const msg = JSON.parse(event.data);
+          const data = msg.data || msg;
+          if (data.e === "markPriceUpdate" || data.e === "kline") return;
+        };
+        marketWs.onclose = () => {
+          document.getElementById("link-status").textContent = "RECONNECTING MARKET FEED...";
+          setTimeout(connectMarket, 1500);
+        };
+      }
+
+      function pulseLastClose(id, price) {
+        const slot = slotOfBot(id);
+        if (!slot) return;
+        const handle = charts.get(slot);
+        if (!handle || !handle.last || !Number.isFinite(price) || price <= 0) return;
+        const last = handle.last;
+        const next = {
+          time: last.time,
+          open: last.open,
+          high: Math.max(last.high, price),
+          low: Math.min(last.low, price),
+          close: price,
+        };
+        handle.last = next;
+        handle.bars[handle.bars.length - 1] = next;
+        if (handle.series) {
+          try { handle.series.update(next); } catch (_err) {}
+        } else if (handle.canvas) {
+          queueCanvas(slot);
+        }
+      }
+
+      function startLogEngine() {
+        if (logsStarted) return;
+        logsStarted = true;
+        for (let id = 1; id <= BOT_COUNT; id += 1) {
+          const kick = 200 + ((id * 37) % 11000) + (fnv1a(`logkick|${id}`) % 900);
+          const loop = () => {
+            const delay = 3000 + (fnv1a(`loggap|${id}|${unixSec()}`) % 9001);
+            setTimeout(() => {
+              const st = botState.get(id);
+              if (st && st.seeded) pushLog(id, composeExecLog(st, "tick"));
+              loop();
+            }, delay);
+          };
+          setTimeout(loop, kick);
+        }
+      }
+
+      function syncChartClock(id, st, t = unixSec()) {
+        const slot = slotOfBot(id);
+        if (!slot || !st) return;
+        const handle = charts.get(slot);
+        if (!handle) return;
+        const tf = chartTf(st.interval);
+        const step = chartStepSec(tf);
+        const aligned = t - (t % step);
+        const sample = chartSampleSec(t, tf);
+        if (!handle.last || handle.last.time !== aligned) {
+          handle.bars = syntheticKlines(st.symbol, tf);
+          handle.last = handle.bars[handle.bars.length - 1];
+          handle.chartSample = sample;
+          if (handle.canvas) queueCanvas(slot);
+          return;
+        }
+        if (handle.chartSample === sample) return;
+        handle.chartSample = sample;
+        const px = barCloseAt(st.symbol, tf, t);
+        pulseLastClose(id, px);
+      }
+
+      function jitterMark(st, px) {
+        const t = unixSec();
+        const rng = tickRng(t, st.id, st.symbol, "jitter");
+        const amp = Math.max(px * 0.00006, px >= 100 ? 0.2 : px * 0.0004);
+        return px + (rng() * 2 - 1) * amp;
+      }
+
+      function startMarkPulse() {
+        if (markPulseStarted) return;
+        markPulseStarted = true;
+        setInterval(() => {
+          const t = unixSec();
+          for (let view = 1; view <= PAGE_SIZE; view += 1) {
+            const id = botIdOfSlot(view);
+            const st = botState.get(id);
+            if (!st || !st.seeded) continue;
+            const prevPnl = st.pnl;
+            syncClock(st, t);
+            st.lastPnlDir = st.pnl > prevPnl + 0.01 ? 1 : st.pnl < prevPnl - 0.01 ? -1 : 0;
+            paint(id, { pnlDir: st.lastPnlDir || 0 });
+            syncChartClock(id, st, t);
+          }
+        }, 1000);
+      }
+
+      function padBot(id) {
+        return String(id).padStart(4, "0");
+      }
+
+      function composeExecLog(st, kind) {
+        if (!st) return "engine idle";
+        st.logSeq = (st.logSeq || 0) + 1;
+        const now = unixSec();
+        const seq = st.logSeq;
+        const salt = fnv1a(`${st.id}|${seq}|${now}|${st.symbol}|${kind || "tick"}`);
+        const asset = baseAsset(st.symbol);
+        const bot = `#${padBot(st.id)}`;
+        const tag = st.strategy || "TTM";
+        const side = st.side || "LONG";
+        const mark = fmt(st.mark);
+        const frac = 0.018 + (salt % 7200) / 100000;
+        const rawQty = Math.max(Number(st.size) * frac, 1 / 10 ** sizeDigits(st.symbol));
+        const qty = fmtSize(naturalSize(rawQty, st.symbol, st.id + seq), st.symbol);
+        const pct = (6.5 + (salt % 2000) / 1000).toFixed(1);
+        const ticket = `x${(salt % 900000 + 100000).toString(16)}`;
+        const variants = [
+          `${bot} ${asset} filled ${qty} · ${tag} ${side} ${ticket}`,
+          `${bot} ${tag} signal confirmed on ${st.symbol} · ${qty} ${ticket}`,
+          `${bot} risk check @ ${pct}% notional · ${asset} ${ticket}`,
+          `${bot} ${side} ${kind === "close" ? "reduce" : "add"} ${qty} @ ${mark} ${ticket}`,
+          `${bot} ${tag} hedge adjust ${qty} · liq ${fmt(st.liq)} ${ticket}`,
+          `${bot} inventory skew ${asset} ${qty} · ${pct}% cap ${ticket}`,
+          `${bot} ${st.symbol} maker fill ${qty} · ${tag} ${ticket}`,
+          `${bot} TTM confirm ${asset} ${qty} · risk ${pct}% ${ticket}`,
+        ];
+        if (kind === "open") {
+          return `${bot} session live ${st.runtimeLabel} · ${st.symbol} ${tag} ${ticket}`;
+        }
+        if (kind === "close") {
+          return `${bot} ${tag} take-profit ${qty} · ${side} ${st.symbol} ${ticket}`;
+        }
+        if (kind === "risk") {
+          return `${bot} 10% DD guard hold · risk check @ ${pct}% ${ticket}`;
+        }
+        return variants[salt % variants.length];
+      }
+
+      function tradeLog(st, qty) {
+        return composeExecLog(st, "close");
+      }
+
+      function settleStep(st) {
+        const saved = ledgerCache.bots[st.id];
+        const lastYmd = saved?.lastYmd;
+        if (lastYmd && lastYmd !== ymd()) {
+          st.baseBalance = compoundMissedDays(st, walletOf(st), lastYmd);
+        }
+        const t = unixSec();
+        const bucket = Math.floor(t / 20);
+        const rng = tickRng(bucket, st.id, st.symbol, "settle");
+        const before = walletOf(st);
+        st.baseBalance = clockBalance(st, t);
+        const win = rng() < 0.7;
+        st.exposure = clockExposure(st, t);
+        st.lastSettleAt = t * 1000;
+        const beforeSize = st.size;
+        resyncSize(st);
+        persistBot(st);
+        return { win: win || st.baseBalance >= before, sizeDelta: st.size - beforeSize };
+      }
+
+      function executeTrade(id) {
+        const st = botState.get(id);
+        if (!st || !st.seeded || !st.size || !st.mark) return;
+        const stamp = nowStamp();
+        const { win, sizeDelta } = settleStep(st);
+        if (win) pushLog(id, tradeLog(st, Math.abs(sizeDelta) || st.size * 0.04), stamp);
+        else pushLog(id, composeExecLog(st, "risk"), stamp);
+        paint(id, { sizeChanged: true, sizeDir: sizeDelta >= 0 ? 1 : -1, balDir: win ? 1 : -1 });
+      }
+
+      function startTradeEngine() {
+        if (tradeStarted) return;
+        tradeStarted = true;
+        const loop = () => {
+          const t = unixSec();
+          const delay = 15000 + Math.floor(seededUnit(Math.floor(t / 15), 0, "TRADE", "delay") * 15000);
+          setTimeout(() => {
+            const now = unixSec();
+            const rng = tickRng(Math.floor(now / 20), 0, "TRADE", "pool");
+            const pool = slotsCache.map((slot) => slot.id);
+            for (let i = pool.length - 1; i > 0; i -= 1) {
+              const j = Math.floor(rng() * (i + 1));
+              [pool[i], pool[j]] = [pool[j], pool[i]];
+            }
+            const n = 3 + Math.floor(rng() * 4);
+            pool.slice(0, n).forEach(executeTrade);
+            loop();
+          }, delay);
+        };
+        setTimeout(loop, 8000);
+      }
+
+      function showReloadMask(id, holdMs) {
+        const view = slotOfBot(id);
+        const root = phones.get(view);
+        if (!root) return;
+        attachReloadMask(root);
+        const mask = root.querySelector("[data-reload-mask]");
+        const label = root.querySelector("[data-reload-text]");
+        if (label) label.textContent = Math.random() < 0.5 ? "[SYSTEM RELOADING]" : "[API RECONNECTING...]";
+        reloadingIds.add(id);
+        mask.style.visibility = "visible";
+        mask.style.opacity = "1";
+        setTimeout(() => {
+          const st = botState.get(id);
+          const slot = slotsCache.find((s) => s.id === id);
+          if (st && slot) {
+            paint(id);
+            syncChartClock(id, st);
+          }
+          mask.style.opacity = "0";
+          setTimeout(() => {
+            mask.style.visibility = "hidden";
+            reloadingIds.delete(id);
+            if (st) paint(id);
+          }, 380);
+        }, holdMs);
+      }
+
+      function startReloadEngine() {
+        if (reloadStarted) return;
+        reloadStarted = true;
+        injectReloadStyles();
+        const loop = () => {
+          const delay = 45000 + Math.floor(Math.random() * 45000);
+          setTimeout(() => {
+            const pool = Array.from({ length: PAGE_SIZE }, (_, i) => groupIndex * PAGE_SIZE + i + 1)
+              .filter((id) => !reloadingIds.has(id));
+            if (pool.length) {
+              const id = pool[Math.floor(Math.random() * pool.length)];
+              const hold = 3000 + Math.floor(Math.random() * 2000);
+              showReloadMask(id, hold);
+            }
+            loop();
+          }, delay);
+        };
+        loop();
+      }
+
+      loadLedger();
+      buildGroupBar();
+      for (let i = 1; i <= PAGE_SIZE; i += 1) {
+        const el = phoneTemplate(i);
+        wall.appendChild(el);
+        phones.set(i, el);
+      }
+      window.addEventListener("pagehide", () => {
+        for (const st of botState.values()) persistBot(st);
+        flushLedger();
+      });
+
+      applyConfig(localSlots());
+      fetch("/api/wall", { credentials: "include" })
+        .then((res) => {
+          if (res.status === 401) {
+            window.location.href = "/login.html";
+            return null;
+          }
+          return res.json();
+        })
+        .catch(() => null);
+
+      document.getElementById("logout").addEventListener("click", async () => {
+        localStorage.removeItem("auth_token");
+        try {
+          await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+        } catch (_err) {}
+        window.location.href = "/login.html";
+      });
+
+    </script>
+  </body>
+</html>

@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>尼龙虾 NEEKO 智能交易 - 管理后台</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="min-h-screen bg-slate-950 text-slate-100">
+    <div id="login-view" class="flex min-h-screen items-center justify-center px-4">
+      <form id="admin-login" class="w-full max-w-md space-y-4 rounded-2xl border border-slate-800 bg-slate-900 p-8">
+        <p class="text-[11px] font-medium uppercase tracking-[0.35em] text-cyan-300/80">NEEKO Smart Trading Dashboard</p>
+        <h1 class="text-2xl font-semibold">尼龙虾 NEEKO 智能交易管理系统</h1>
+        <p class="text-sm text-slate-400">管理员登录（.env 中的 ADMIN_PASSWORD，默认 admin123）</p>
+        <input name="password" type="password" required placeholder="管理员密码" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-amber-500" />
+        <button class="w-full rounded-lg bg-amber-500 py-2 font-medium text-slate-950 hover:bg-amber-400">登录</button>
+        <p id="login-status" class="min-h-5 text-sm text-rose-400"></p>
+      </form>
+    </div>
+    <div id="dash-view" class="hidden">
+      <header class="flex items-center justify-between border-b border-slate-800 px-6 py-3">
+        <h1 class="text-lg font-semibold tracking-wide">尼龙虾 NEEKO 智能交易管理系统</h1>
+        <div class="flex gap-3 text-sm">
+          <a href="/" class="text-amber-400 hover:text-amber-300">打开大屏</a>
+          <button id="logout" class="text-slate-400 hover:text-white">退出</button>
+        </div>
+      </header>
+      <main class="mx-auto max-w-6xl space-y-8 px-6 py-8">
+        <section class="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+          <h2 class="mb-4 font-semibold">客户登录账号</h2>
+          <form id="auth-form" class="grid gap-3 md:grid-cols-3">
+            <input name="username" placeholder="客户 ID" class="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" />
+            <input name="password" type="password" placeholder="新密码（留空则不改）" class="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" />
+            <button class="rounded-md bg-amber-500 px-3 py-2 text-sm text-slate-950">保存账号</button>
+          </form>
+          <p id="auth-status" class="mt-2 text-sm text-slate-400"></p>
+        </section>
+        <section class="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+          <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 class="font-semibold">12 个机器人：名称 / 交易对 / 本金</h2>
+            <div class="flex gap-2">
+              <button id="reset-slots" class="rounded-md bg-slate-800 px-3 py-1.5 text-sm">重置默认大资金</button>
+              <button id="save-slots" class="rounded-md bg-amber-500 px-3 py-1.5 text-sm text-slate-950">保存并同步大屏</button>
+            </div>
+          </div>
+          <p id="slot-status" class="mb-3 text-sm text-slate-400">当日盈亏由客户端日期种子自动推演，无需在后台填写 ROI。</p>
+          <div id="slot-list" class="grid gap-3 lg:grid-cols-2"></div>
+        </section>
+      </main>
+    </div>
+    <script>
+      const loginView = document.getElementById("login-view");
+      const dashView = document.getElementById("dash-view");
+      async function api(url, options = {}) {
+        const res = await fetch(url, { credentials: "include", ...options });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || "请求失败");
+        return json;
+      }
+      function renderSlots(slots) {
+        document.getElementById("slot-list").innerHTML = slots
+          .map(
+            (slot) => `<div class="rounded-xl border border-slate-800 bg-slate-950 p-3 space-y-2" data-id="${slot.id}">
+              <div class="text-sm font-medium text-cyan-300">Slot ${slot.id}</div>
+              <label class="block text-xs text-slate-400">机器人编号
+                <input data-name value="${String(slot.name || "").replace(/"/g, "&quot;")}" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-white" />
+              </label>
+              <div class="grid grid-cols-2 gap-2">
+                <label class="block text-xs text-slate-400">交易对
+                  <input data-symbol value="${slot.symbol || ""}" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm uppercase text-white" />
+                </label>
+                <label class="block text-xs text-slate-400">本金 USDT
+                  <input data-balance type="number" step="0.01" value="${slot.initialBalance}" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-white" />
+                </label>
+              </div>
+              <label class="block text-xs text-slate-400">多空
+                <select data-side class="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-white">
+                  <option value="LONG" ${slot.side === "LONG" ? "selected" : ""}>多 LONG</option>
+                  <option value="SHORT" ${slot.side === "SHORT" ? "selected" : ""}>空 SHORT</option>
+                </select>
+              </label>
+            </div>`
+          )
+          .join("");
+      }
+      async function refresh() {
+        const data = await api("/api/admin/config");
+        document.querySelector("#auth-form [name=username]").value = data.auth.username;
+        renderSlots(data.slots);
+      }
+      function showDash() {
+        loginView.classList.add("hidden");
+        dashView.classList.remove("hidden");
+        refresh();
+      }
+      function collectSlots() {
+        return [...document.querySelectorAll("#slot-list [data-id]")].map((row) => ({
+          id: Number(row.dataset.id),
+          name: row.querySelector("[data-name]").value,
+          symbol: row.querySelector("[data-symbol]").value,
+          initialBalance: Number(row.querySelector("[data-balance]").value),
+          side: row.querySelector("[data-side]").value,
+        }));
+      }
+      fetch("/api/auth/me", { credentials: "include" })
+        .then((res) => res.json())
+        .then((data) => { if (data.role === "admin") showDash(); })
+        .catch(() => {});
+      document.getElementById("admin-login").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        try {
+          await api("/api/admin/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password: new FormData(event.target).get("password") }),
+          });
+          showDash();
+        } catch (err) {
+          document.getElementById("login-status").textContent = err.message;
+        }
+      });
+      document.getElementById("auth-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const status = document.getElementById("auth-status");
+        try {
+          await api("/api/admin/auth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(Object.fromEntries(new FormData(event.target))),
+          });
+          status.textContent = "客户账号已保存";
+          status.className = "mt-2 text-sm text-emerald-400";
+        } catch (err) {
+          status.textContent = err.message;
+          status.className = "mt-2 text-sm text-rose-400";
+        }
+      });
+      document.getElementById("save-slots").addEventListener("click", async () => {
+        const status = document.getElementById("slot-status");
+        try {
+          await api("/api/admin/slots", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ slots: collectSlots() }),
+          });
+          status.textContent = "已保存并同步大屏";
+          status.className = "mb-3 text-sm text-emerald-400";
+        } catch (err) {
+          status.textContent = err.message;
+          status.className = "mb-3 text-sm text-rose-400";
+        }
+      });
+      document.getElementById("reset-slots").addEventListener("click", async () => {
+        if (!confirm("恢复 12 个大资金默认账户？")) return;
+        const status = document.getElementById("slot-status");
+        try {
+          const data = await api("/api/admin/slots/reset", { method: "POST" });
+          renderSlots(data.slots);
+          status.textContent = "已重置默认大资金组合";
+          status.className = "mb-3 text-sm text-emerald-400";
+        } catch (err) {
+          status.textContent = err.message;
+          status.className = "mb-3 text-sm text-rose-400";
+        }
+      });
+      document.getElementById("logout").addEventListener("click", async () => {
+        await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+        window.location.reload();
+      });
+    </script>
+  </body>
+</html>
