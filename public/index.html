@@ -383,6 +383,7 @@
       let marketWs;
       let marketReconnectTimer = 0;
       let marketWsGeneration = 0;
+      let marketFeedKind = "futures";
       let liveTickRaf = 0;
       const liveTickBuf = new Map();
       let logsStarted = false;
@@ -916,13 +917,21 @@
               horzLines: { visible: false },
             },
             rightPriceScale: {
-              visible: false,
+              visible: true,
+              width: 65,
+              borderVisible: false,
+              entireTextOnly: false,
             },
           });
         } catch (_err) {}
         try {
           chart.priceScale("right").applyOptions({
-            visible: false,
+            visible: true,
+            width: 65,
+            minimumWidth: 65,
+            borderVisible: false,
+            entireTextOnly: false,
+            textColor: "#ffffff",
           });
         } catch (_err) {}
       }
@@ -943,7 +952,10 @@
               horzLines: { visible: false },
             },
             rightPriceScale: {
-              visible: false,
+              visible: true,
+              width: 65,
+              borderVisible: false,
+              entireTextOnly: false,
             },
             timeScale: {
               visible: false,
@@ -952,8 +964,8 @@
               secondsVisible: false,
               barSpacing: 1.8,
               minBarSpacing: 0.55,
-              rightOffset: 8,
-              fixLeftEdge: true,
+              rightOffset: 18,
+              fixLeftEdge: false,
               fixRightEdge: false,
             },
             crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },
@@ -984,7 +996,8 @@
           try {
             lastPriceSeries = chart.addLineSeries({
               color: "#26a69a",
-              lineVisible: false,
+              lineVisible: true,
+              lineWidth: 2,
               lastValueVisible: true,
               priceLineVisible: true,
               priceLineWidth: 1,
@@ -1010,7 +1023,10 @@
               horzLines: { visible: false },
             },
             rightPriceScale: {
-              visible: false,
+              visible: true,
+              width: 65,
+              borderVisible: false,
+              entireTextOnly: false,
             },
           });
           chart.timeScale().fitContent();
@@ -1040,6 +1056,10 @@
         const handle = charts.get(slot);
         const tag = ensurePriceTag(root);
         if (!tag || !(Number(price) > 0)) return;
+        if (handle && handle.lastPriceSeries) {
+          tag.style.display = "none";
+          return;
+        }
         const up = !(Number(prevPrice) > 0) || price >= prevPrice;
         tag.textContent = fmt(price);
         tag.classList.toggle("down", !up);
@@ -1073,53 +1093,53 @@
         if (!handle || !(Number(px) > 0)) return;
         const price = Number(px);
         const prev = Number(handle.lastPrice) > 0 ? handle.lastPrice : price;
-        if (handle.lastPrice !== price) {
-          handle.prevPrice = prev;
-          handle.lastPrice = price;
-        }
-        paintPriceTag(slot, price, handle.prevPrice);
-        const t = handle.last && Number(handle.last.time) > 0 ? handle.last.time : unixSec();
+        handle.prevPrice = prev;
+        handle.lastPrice = price;
+        paintPriceTag(slot, price, prev);
+        const t = Math.floor(Date.now() / 1000);
+        const point = { time: t, value: price };
         if (handle.lastPriceSeries) {
-          const point = { time: t, value: price };
+          if (!Array.isArray(handle.livePoints)) handle.livePoints = [];
+          const pts = handle.livePoints;
+          if (pts.length && pts[pts.length - 1].time === t) pts[pts.length - 1] = point;
+          else pts.push(point);
+          if (pts.length > 240) pts.splice(0, pts.length - 240);
           try {
             handle.lastPriceSeries.update(point);
           } catch (_err) {
-            try { handle.lastPriceSeries.setData([point]); } catch (_e) {}
+            try { handle.lastPriceSeries.setData(pts.slice()); } catch (_e) {}
           }
-          const up = price >= handle.prevPrice;
+          const up = price >= prev;
           try {
             handle.lastPriceSeries.applyOptions({
               lastValueVisible: true,
               priceLineVisible: true,
+              lineVisible: true,
               priceLineColor: up ? "#26a69a" : "#ef5350",
               color: up ? "#26a69a" : "#ef5350",
             });
-          } catch (_err) {}
-        }
-        if (handle.series) {
-          const up = price >= handle.prevPrice;
-          try {
-            handle.series.applyOptions({
-              lastValueVisible: false,
-              priceLineVisible: false,
-              priceLineColor: up ? "#26a69a" : "#ef5350",
+            handle.chart?.applyOptions({
+              rightPriceScale: {
+                visible: true,
+                width: 65,
+              },
             });
           } catch (_err) {}
-          try { applyChartChrome(handle.chart); } catch (_err2) {}
-          if (handle.last) {
-            const nextBar = {
-              time: handle.last.time,
-              open: handle.last.open,
-              high: Math.max(handle.last.high, price),
-              low: Math.min(handle.last.low, price),
-              close: price,
-            };
-            handle.last = nextBar;
-            if (Array.isArray(handle.bars) && handle.bars.length) {
-              handle.bars[handle.bars.length - 1] = nextBar;
-            }
-            try { handle.series.update(nextBar); } catch (_err3) {}
+          try { handle.chart?.timeScale().scrollToRealTime(); } catch (_err) {}
+        }
+        if (handle.series && handle.last) {
+          const nextBar = {
+            time: handle.last.time,
+            open: handle.last.open,
+            high: Math.max(handle.last.high, price),
+            low: Math.min(handle.last.low, price),
+            close: price,
+          };
+          handle.last = nextBar;
+          if (Array.isArray(handle.bars) && handle.bars.length) {
+            handle.bars[handle.bars.length - 1] = nextBar;
           }
+          try { handle.series.update(nextBar); } catch (_err3) {}
         }
         if (handle.canvas) queueCanvas(slot);
       }
@@ -1233,7 +1253,16 @@
           lastPriceSeries: lw?.lastPriceSeries || null,
           priceLine: null,
           canvas: null,
+          livePoints: [],
         };
+        if (handle.lastPriceSeries) {
+          const t0 = Math.floor(Date.now() / 1000);
+          const v0 = Number(handle.lastPrice) > 0 ? handle.lastPrice : Number(handle.last && handle.last.close) || 0;
+          if (v0 > 0) {
+            handle.livePoints = [{ time: t0, value: v0 }];
+            try { handle.lastPriceSeries.setData(handle.livePoints); } catch (_err) {}
+          }
+        }
         if (handle.series) {
           try {
             handle.series.applyOptions({
@@ -1273,7 +1302,8 @@
                 horzLines: { visible: false },
               },
               rightPriceScale: {
-                visible: false,
+                visible: true,
+                width: 65,
               },
             });
             applyChartChrome(handle.chart);
@@ -1638,6 +1668,7 @@
       function connectMarket() {
         closeMarketSocket();
         const gen = ++marketWsGeneration;
+        let gotTick = false;
         const parts = [];
         const seen = new Set();
         const add = (stream) => {
@@ -1648,12 +1679,15 @@
         for (const asset of MAJOR_ASSETS) {
           const s = `${asset.toLowerCase()}usdt`;
           add(`${s}@aggTrade`);
-          add(`${s}@markPrice@1s`);
           add(`${s}@kline_1m`);
           add(`${s}@kline_3m`);
+          if (marketFeedKind === "futures") add(`${s}@markPrice@1s`);
         }
         if (!parts.length) return;
-        marketWs = new WebSocket(`wss://fstream.binance.com/stream?streams=${parts.join("/")}`);
+        const base = marketFeedKind === "spot"
+          ? "wss://stream.binance.com:9443/stream"
+          : "wss://fstream.binance.com/stream";
+        marketWs = new WebSocket(`${base}?streams=${parts.join("/")}`);
         marketWs.onopen = () => {
           if (gen !== marketWsGeneration) return;
           lastWsAt = Date.now();
@@ -1665,15 +1699,18 @@
           let msg;
           try { msg = JSON.parse(event.data); } catch (_err) { return; }
           const data = msg.data || msg;
-          if (data.e === "aggTrade") {
+          if (data.e === "aggTrade" || data.e === "trade") {
+            gotTick = true;
             queueLiveTick(data.s, data.p);
             return;
           }
           if (data.e === "markPriceUpdate") {
+            gotTick = true;
             queueLiveTick(data.s, data.p);
             return;
           }
           if (data.e === "kline" && data.k) {
+            gotTick = true;
             const k = data.k;
             applyBinanceKline(data.s || k.s, k.i, {
               time: Math.floor(Number(k.t) / 1000),
@@ -1692,10 +1729,11 @@
         marketWs.onclose = () => {
           if (gen !== marketWsGeneration) return;
           document.getElementById("link-status").textContent = "RECONNECTING MARKET FEED...";
+          if (!gotTick && marketFeedKind === "futures") marketFeedKind = "spot";
           marketReconnectTimer = setTimeout(() => {
             if (gen !== marketWsGeneration) return;
             connectMarket();
-          }, 1500);
+          }, 1200);
         };
       }
 
