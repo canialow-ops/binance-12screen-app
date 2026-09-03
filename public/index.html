@@ -625,12 +625,18 @@
       }
 
       function theoreticalPnl(st) {
-        return (Number(st.mark) - Number(st.entry)) * Number(st.size) * dirOf(st);
+        const mark = Number(st.mark);
+        const entry = Number(st.entry);
+        const size = Number(st.size);
+        if (!(mark > 0) || !(entry > 0) || !(size > 0)) return 0;
+        return (mark - entry) * size * dirOf(st);
       }
 
       function refreshDerived(st) {
         const pnl = theoreticalPnl(st);
-        const margin = (st.size * st.entry) / (st.leverage || 8);
+        const entry = Number(st.entry);
+        const size = Number(st.size);
+        const margin = (size * entry) / (st.leverage || 8);
         st.pnl = pnl;
         st.margin = margin;
         st.roi = margin > 0 ? (pnl / margin) * 100 : 0;
@@ -719,7 +725,7 @@
         upsertBarList(current, bar);
       }
 
-      function drawCanvasKline(canvas, bars) {
+      function drawCanvasKline(canvas, bars, lastPrice, prevPrice) {
         const ctx = canvas.getContext("2d");
         if (!ctx || !bars.length) return;
         const dpr = window.devicePixelRatio || 1;
@@ -737,12 +743,19 @@
           min = Math.min(min, bar.low);
           max = Math.max(max, bar.high);
         }
+        const live = Number(lastPrice);
+        if (live > 0) {
+          min = Math.min(min, live);
+          max = Math.max(max, live);
+        }
         const pad = (max - min) * 0.06 || min * 0.01;
         min -= pad;
         max += pad;
         const span = max - min || 1;
         const n = bars.length;
-        const slot = w / n;
+        const labelW = 52;
+        const plotW = Math.max(8, w - labelW);
+        const slot = plotW / n;
         const bodyW = Math.max(0.6, Math.min(2.4, slot * 0.62));
         for (let i = 0; i < n; i += 1) {
           const bar = bars[i];
@@ -763,6 +776,48 @@
           const bh = Math.max(1, Math.abs(yC - yO));
           ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
         }
+        if (live > 0) drawPriceTag(ctx, plotW, w, h, min, max, live, prevPrice);
+      }
+
+      function drawPriceTag(ctx, plotW, w, h, min, max, price, prevPrice) {
+        const span = max - min || 1;
+        const y = ((max - price) / span) * h;
+        const up = !(Number(prevPrice) > 0) || price >= prevPrice;
+        const color = up ? "#26a69a" : "#ef5350";
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = 0.95;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(plotW, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+        const label = fmt(price);
+        ctx.font = "600 9px ui-sans-serif, system-ui, -apple-system, sans-serif";
+        const padX = 5;
+        const tw = ctx.measureText(label).width;
+        const bw = Math.max(44, tw + padX * 2);
+        const bh = 14;
+        const bx = w - bw - 1;
+        const by = Math.min(h - bh - 1, Math.max(1, y - bh / 2));
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, 2);
+        else ctx.rect(bx, by, bw, bh);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(plotW, y);
+        ctx.lineTo(bx, y);
+        ctx.stroke();
+        ctx.fillStyle = "#ffffff";
+        ctx.textBaseline = "middle";
+        ctx.textAlign = "center";
+        ctx.fillText(label, bx + bw / 2, by + bh / 2 + 0.5);
+        ctx.restore();
       }
 
       function queueCanvas(id) {
@@ -772,7 +827,7 @@
           canvasRaf = 0;
           for (const cid of dirtyCanvas) {
             const handle = charts.get(cid);
-            if (handle?.canvas) drawCanvasKline(handle.canvas, handle.bars);
+            if (handle?.canvas) drawCanvasKline(handle.canvas, handle.bars, handle.lastPrice, handle.prevPrice);
           }
           dirtyCanvas.clear();
         });
@@ -834,6 +889,41 @@
         }
       }
 
+      function applyLivePriceToChart(id, px) {
+        const slot = slotOfBot(id);
+        if (!slot) return;
+        const handle = charts.get(slot);
+        if (!handle || !(Number(px) > 0)) return;
+        const price = Number(px);
+        if (handle.lastPrice === price) return;
+        handle.prevPrice = Number(handle.lastPrice) > 0 ? handle.lastPrice : price;
+        handle.lastPrice = price;
+        if (handle.series) {
+          const up = price >= handle.prevPrice;
+          const color = up ? "#26a69a" : "#ef5350";
+          if (handle.priceLine) {
+            try {
+              handle.priceLine.applyOptions({ price, color, lineVisible: true, axisLabelVisible: true });
+            } catch (_err) {
+              handle.priceLine = null;
+            }
+          }
+          if (!handle.priceLine) {
+            try {
+              handle.priceLine = handle.series.createPriceLine({
+                price,
+                color,
+                lineWidth: 1,
+                lineStyle: 2,
+                axisLabelVisible: true,
+                title: "",
+              });
+            } catch (_err) {}
+          }
+        }
+        if (handle.canvas) queueCanvas(slot);
+      }
+
       async function loadKlines(symbol, interval) {
         const key = `${symbol}|${interval}`;
         if (klineCache.has(key)) return klineCache.get(key).slice();
@@ -892,6 +982,8 @@
           interval: tf,
           bars,
           last: bars[bars.length - 1],
+          lastPrice: Number(mark) > 0 ? Number(mark) : liveMarkOf(symbol),
+          prevPrice: 0,
           chart: lw?.chart || null,
           series: lw?.series || null,
           canvas: null,
@@ -902,7 +994,7 @@
           canvas.style.height = "100%";
           host.appendChild(canvas);
           handle.canvas = canvas;
-          drawCanvasKline(canvas, bars);
+          drawCanvasKline(canvas, bars, handle.lastPrice, handle.prevPrice);
         }
         handle.ro = new ResizeObserver(() => {
           if (handle.chart) {
@@ -914,6 +1006,9 @@
         });
         handle.ro.observe(host);
         charts.set(slot, handle);
+        const botId = botIdOfSlot(slot);
+        const livePx = Number(handle.lastPrice) > 0 ? handle.lastPrice : liveMarkOf(symbol);
+        if (botId && livePx > 0) applyLivePriceToChart(botId, livePx);
       }
 
       function applyBinanceKline(symbol, interval, bar, closed) {
@@ -1045,11 +1140,12 @@
           seedBooks(st);
           st.seeded = true;
           refreshDerived(st);
+          if (slotOfBot(st.id)) applyLivePriceToChart(st.id, next);
           return true;
         }
         refreshDerived(st);
-        enforceBand(st);
         st.lastPnlDir = st.pnl > prevPnl + 0.01 ? 1 : st.pnl < prevPnl - 0.01 ? -1 : 0;
+        if (slotOfBot(st.id)) applyLivePriceToChart(st.id, next);
         return true;
       }
 
@@ -1062,9 +1158,8 @@
         st.exposure = clockExposure(st, t);
         if (!(Number(st.entry) > 0)) st.entry = canonicalEntry(st);
         if (st.entry) st.liq = liqFromEntry(st.entry, st.side);
-        resyncSize(st);
         refreshDerived(st);
-        enforceBand(st);
+        if (slotOfBot(st.id) && Number(st.mark) > 0) applyLivePriceToChart(st.id, st.mark);
       }
 
       function seedPosition(st) {
@@ -1111,6 +1206,7 @@
         bumpFlash(roiEl, pnlKind, `leading-none ${tone}`);
         markEl.textContent = fmt(st.mark);
         markEl.className = "text-cyan-300";
+        if (slotOfBot(id) && Number(st.mark) > 0) applyLivePriceToChart(id, st.mark);
         const entryEl = root.querySelector("[data-entry]");
         const liqEl = root.querySelector("[data-liq]");
         entryEl.textContent = fmt(st.entry);
