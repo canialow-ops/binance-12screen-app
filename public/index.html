@@ -381,6 +381,10 @@
       const liveMarkBySymbol = new Map();
       let slotsCache = [];
       let marketWs;
+      let marketReconnectTimer = 0;
+      let marketWsGeneration = 0;
+      let liveTickRaf = 0;
+      const liveTickBuf = new Map();
       let logsStarted = false;
       let tradeStarted = false;
       let markPulseStarted = false;
@@ -971,11 +975,32 @@
             priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
           });
           series.applyOptions({
-            lastValueVisible: true,
-            priceLineVisible: true,
+            lastValueVisible: false,
+            priceLineVisible: false,
           });
           applyChartChrome(chart);
           if (bars.length) series.setData(bars);
+          let lastPriceSeries = null;
+          try {
+            lastPriceSeries = chart.addLineSeries({
+              color: "#26a69a",
+              lineVisible: false,
+              lastValueVisible: true,
+              priceLineVisible: true,
+              priceLineWidth: 1,
+              priceLineStyle: 2,
+              crosshairMarkerVisible: false,
+              priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
+            });
+            lastPriceSeries.applyOptions({
+              lastValueVisible: true,
+              priceLineVisible: true,
+            });
+            const last = bars[bars.length - 1];
+            if (last) lastPriceSeries.setData([{ time: last.time, value: last.close }]);
+          } catch (_lineErr) {
+            lastPriceSeries = null;
+          }
           const rect = host.getBoundingClientRect();
           chart.applyOptions({
             width: Math.max(1, rect.width),
@@ -989,7 +1014,7 @@
             },
           });
           chart.timeScale().fitContent();
-          return { chart, series };
+          return { chart, series, lastPriceSeries };
         } catch (_err) {
           try { host.innerHTML = ""; } catch (_e) {}
           return null;
@@ -1048,36 +1073,92 @@
         if (!handle || !(Number(px) > 0)) return;
         const price = Number(px);
         const prev = Number(handle.lastPrice) > 0 ? handle.lastPrice : price;
-        paintPriceTag(slot, price, handle.lastPrice === price ? handle.prevPrice : prev);
-        if (handle.lastPrice === price) return;
-        handle.prevPrice = prev;
-        handle.lastPrice = price;
-        if (handle.series) {
-          const up = price >= handle.prevPrice;
-          const color = up ? "#26a69a" : "#ef5350";
+        if (handle.lastPrice !== price) {
+          handle.prevPrice = prev;
+          handle.lastPrice = price;
+        }
+        paintPriceTag(slot, price, handle.prevPrice);
+        const t = handle.last && Number(handle.last.time) > 0 ? handle.last.time : unixSec();
+        if (handle.lastPriceSeries) {
+          const point = { time: t, value: price };
           try {
-            handle.series.applyOptions({
+            handle.lastPriceSeries.update(point);
+          } catch (_err) {
+            try { handle.lastPriceSeries.setData([point]); } catch (_e) {}
+          }
+          const up = price >= handle.prevPrice;
+          try {
+            handle.lastPriceSeries.applyOptions({
               lastValueVisible: true,
               priceLineVisible: true,
-              priceLineColor: color,
+              priceLineColor: up ? "#26a69a" : "#ef5350",
+              color: up ? "#26a69a" : "#ef5350",
             });
           } catch (_err) {}
+        }
+        if (handle.series) {
+          const up = price >= handle.prevPrice;
           try {
-            applyChartChrome(handle.chart);
-          } catch (_err2) {}
+            handle.series.applyOptions({
+              lastValueVisible: false,
+              priceLineVisible: false,
+              priceLineColor: up ? "#26a69a" : "#ef5350",
+            });
+          } catch (_err) {}
+          try { applyChartChrome(handle.chart); } catch (_err2) {}
           if (handle.last) {
             const nextBar = {
-              ...handle.last,
-              close: price,
+              time: handle.last.time,
+              open: handle.last.open,
               high: Math.max(handle.last.high, price),
               low: Math.min(handle.last.low, price),
+              close: price,
             };
             handle.last = nextBar;
-            handle.bars[handle.bars.length - 1] = nextBar;
+            if (Array.isArray(handle.bars) && handle.bars.length) {
+              handle.bars[handle.bars.length - 1] = nextBar;
+            }
             try { handle.series.update(nextBar); } catch (_err3) {}
           }
         }
         if (handle.canvas) queueCanvas(slot);
+      }
+
+      function queueLiveTick(symbol, px) {
+        const sym = String(symbol || "").toUpperCase();
+        const price = Number(px);
+        if (!sym || !(price > 0)) return;
+        liveMarkBySymbol.set(sym, price);
+        liveTickBuf.set(sym, price);
+        if (liveTickRaf) return;
+        liveTickRaf = requestAnimationFrame(() => {
+          liveTickRaf = 0;
+          const batch = Array.from(liveTickBuf.entries());
+          liveTickBuf.clear();
+          for (let i = 0; i < batch.length; i += 1) {
+            flushLiveTick(batch[i][0], batch[i][1]);
+          }
+        });
+      }
+
+      function flushLiveTick(sym, px) {
+        for (let view = 1; view <= PAGE_SIZE; view += 1) {
+          const id = botIdOfSlot(view);
+          const st = botState.get(id);
+          if (!st || String(st.symbol).toUpperCase() !== sym) continue;
+          const prevPnl = Number(st.pnl) || 0;
+          st.mark = roundPx(px, st.symbol);
+          if (!st.entry) {
+            st.entry = canonicalEntry(st);
+            st.liq = liqFromEntry(st.entry, st.side);
+            seedBooks(st);
+            st.seeded = true;
+          }
+          refreshDerived(st);
+          st.lastPnlDir = st.pnl > prevPnl + 0.01 ? 1 : st.pnl < prevPnl - 0.01 ? -1 : 0;
+          applyLivePriceToChart(id, px);
+          paint(id, { pnlDir: st.lastPnlDir || 0 });
+        }
       }
 
       async function loadKlines(symbol, interval) {
@@ -1149,15 +1230,22 @@
           prevPrice: 0,
           chart: lw?.chart || null,
           series: lw?.series || null,
+          lastPriceSeries: lw?.lastPriceSeries || null,
           priceLine: null,
           canvas: null,
         };
         if (handle.series) {
           try {
             handle.series.applyOptions({
-              lastValueVisible: true,
-              priceLineVisible: true,
+              lastValueVisible: false,
+              priceLineVisible: false,
             });
+            if (handle.lastPriceSeries) {
+              handle.lastPriceSeries.applyOptions({
+                lastValueVisible: true,
+                priceLineVisible: true,
+              });
+            }
             applyChartChrome(handle.chart);
           } catch (_err) {}
         } else {
@@ -1532,11 +1620,24 @@
         startReloadEngine();
       }
 
-      function connectMarket() {
-        if (marketWs) {
-          marketWs.onclose = null;
-          try { marketWs.close(); } catch (_err) {}
+      function closeMarketSocket() {
+        if (marketReconnectTimer) {
+          clearTimeout(marketReconnectTimer);
+          marketReconnectTimer = 0;
         }
+        if (!marketWs) return;
+        const ws = marketWs;
+        marketWs = null;
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        try { ws.close(); } catch (_err) {}
+      }
+
+      function connectMarket() {
+        closeMarketSocket();
+        const gen = ++marketWsGeneration;
         const parts = [];
         const seen = new Set();
         const add = (stream) => {
@@ -1546,6 +1647,7 @@
         };
         for (const asset of MAJOR_ASSETS) {
           const s = `${asset.toLowerCase()}usdt`;
+          add(`${s}@aggTrade`);
           add(`${s}@markPrice@1s`);
           add(`${s}@kline_1m`);
           add(`${s}@kline_3m`);
@@ -1553,27 +1655,22 @@
         if (!parts.length) return;
         marketWs = new WebSocket(`wss://fstream.binance.com/stream?streams=${parts.join("/")}`);
         marketWs.onopen = () => {
+          if (gen !== marketWsGeneration) return;
           lastWsAt = Date.now();
           document.getElementById("link-status").textContent = "LIVE CONNECTED · MARK PRICE 1s / LIGHTWEIGHT CHART";
         };
         marketWs.onmessage = (event) => {
+          if (gen !== marketWsGeneration) return;
           lastWsAt = Date.now();
           let msg;
           try { msg = JSON.parse(event.data); } catch (_err) { return; }
           const data = msg.data || msg;
+          if (data.e === "aggTrade") {
+            queueLiveTick(data.s, data.p);
+            return;
+          }
           if (data.e === "markPriceUpdate") {
-            const px = Number(data.p);
-            const sym = String(data.s || "").toUpperCase();
-            if (!sym || !Number.isFinite(px) || px <= 0) return;
-            liveMarkBySymbol.set(sym, px);
-            for (const rec of slotsCache) {
-              if (String(rec.symbol).toUpperCase() !== sym) continue;
-              const st = botState.get(rec.id);
-              if (!st) continue;
-              if (applyMark(st, px) && slotOfBot(rec.id)) {
-                paint(rec.id, { pnlDir: st.lastPnlDir || 0 });
-              }
-            }
+            queueLiveTick(data.s, data.p);
             return;
           }
           if (data.e === "kline" && data.k) {
@@ -1585,16 +1682,31 @@
               low: Number(k.l),
               close: Number(k.c),
             }, Boolean(k.x));
+            queueLiveTick(data.s || k.s, k.c);
           }
         };
         marketWs.onerror = () => {
-          try { marketWs.close(); } catch (_err) {}
+          if (gen !== marketWsGeneration) return;
+          try { marketWs && marketWs.close(); } catch (_err) {}
         };
         marketWs.onclose = () => {
+          if (gen !== marketWsGeneration) return;
           document.getElementById("link-status").textContent = "RECONNECTING MARKET FEED...";
-          setTimeout(connectMarket, 1500);
+          marketReconnectTimer = setTimeout(() => {
+            if (gen !== marketWsGeneration) return;
+            connectMarket();
+          }, 1500);
         };
       }
+
+      window.addEventListener("pagehide", () => {
+        marketWsGeneration += 1;
+        closeMarketSocket();
+      });
+      window.addEventListener("beforeunload", () => {
+        marketWsGeneration += 1;
+        closeMarketSocket();
+      });
 
       function pulseLastClose(id, price) {
         const slot = slotOfBot(id);
