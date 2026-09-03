@@ -215,40 +215,13 @@
         return tickRng(sec, botId, symbol, salt)();
       }
 
-      function seededMark(st, t = unixSec()) {
-        const symbol = st && st.symbol;
-        const botId = st && st.id;
-        const base = fallbackMark(symbol);
-        const phase = (fnv1a(`${botId}|${symbol}|phase`) / 4294967295) * Math.PI * 2;
-        const u = seededUnit(t, botId, symbol, "mark");
-        const wave = Math.sin(t / 53 + phase) * 0.0018 + Math.sin(t / 17 + phase * 1.7) * 0.0009;
-        const tick = (u - 0.5) * 0.00025;
-        return roundPx(Math.max(base * 0.2, base * (1 + wave + tick)), symbol);
-      }
-
       function chartTf(interval) {
         return interval === "3m" ? "3m" : "1m";
       }
 
-      function chartStepSec(interval) {
-        return INTERVAL_SEC[chartTf(interval)] || 60;
-      }
-
-      function chartSampleSec(tSec, interval) {
-        const step = chartStepSec(interval);
-        const grid = Math.min(60, step);
-        return tSec - (tSec % grid);
-      }
-
-      function barCloseAt(symbol, interval, tSec) {
-        const tf = chartTf(interval);
-        const t = chartSampleSec(tSec, tf);
-        const base = fallbackMark(symbol);
-        const phase = (fnv1a(`${symbol}|${tf}|wave`) / 4294967295) * Math.PI * 2;
-        const u = seededUnit(t, 0, symbol, `k|${tf}`);
-        const wave = Math.sin(t / 2100 + phase) * 0.012 + Math.sin(t / 540 + phase * 1.3) * 0.007 + Math.sin(t / 1800 + phase * 0.55) * 0.004;
-        const tick = (u - 0.5) * 0.0012;
-        return Math.max(base * 0.2, base * (1 + wave + tick));
+      function liveMarkOf(symbol) {
+        const px = liveMarkBySymbol.get(String(symbol || "").toUpperCase());
+        return Number(px) > 0 ? px : 0;
       }
 
       function clockExposure(st, t = unixSec()) {
@@ -268,7 +241,7 @@
       }
 
       function canonicalEntry(st) {
-        const ref = seededMark(st, dayStartSec());
+        const ref = liveMarkOf(st.symbol) || fallbackMark(st.symbol);
         return roundPx(entryFromMark(ref, st.leverage, st.side, st.roiBias), st.symbol);
       }
 
@@ -357,6 +330,7 @@
       const charts = new Map();
       const klineCache = new Map();
       const klineInflight = new Map();
+      const liveMarkBySymbol = new Map();
       let slotsCache = [];
       let marketWs;
       let logsStarted = false;
@@ -723,28 +697,26 @@
           .slice(-180);
       }
 
-      function syntheticKlines(symbol, interval) {
-        const tf = chartTf(interval);
-        const step = chartStepSec(tf);
-        const count = 160;
-        const now = unixSec();
-        const aligned = now - (now % step);
-        const bars = [];
-        for (let i = count - 1; i >= 0; i -= 1) {
-          const t0 = aligned - i * step;
-          const tEnd = i === 0 ? now : t0 + step - 1;
-          const open = barCloseAt(symbol, tf, t0);
-          const close = barCloseAt(symbol, tf, tEnd);
-          let high = Math.max(open, close);
-          let low = Math.min(open, close);
-          for (let s = t0; s <= tEnd; s += 60) {
-            const px = barCloseAt(symbol, tf, s);
-            if (px > high) high = px;
-            if (px < low) low = px;
-          }
-          bars.push({ time: t0, open, high, low, close });
+      function upsertBarList(bars, bar) {
+        if (!Array.isArray(bars) || !bar) return bars || [];
+        const last = bars[bars.length - 1];
+        if (!last || bar.time > last.time) {
+          bars.push(bar);
+          if (bars.length > 200) bars.shift();
+        } else if (bar.time === last.time) {
+          bars[bars.length - 1] = { ...last, ...bar, time: last.time };
         }
         return bars;
+      }
+
+      function cacheKlineBar(symbol, interval, bar) {
+        const key = `${symbol}|${chartTf(interval)}`;
+        const current = klineCache.get(key);
+        if (!current) {
+          klineCache.set(key, [bar]);
+          return;
+        }
+        upsertBarList(current, bar);
       }
 
       function drawCanvasKline(canvas, bars) {
@@ -885,6 +857,15 @@
               return bars.slice();
             }
           } catch (_err) {}
+          try {
+            const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=180`);
+            const rows = await res.json();
+            const bars = mapKlines(rows);
+            if (bars.length) {
+              klineCache.set(key, bars);
+              return bars.slice();
+            }
+          } catch (_err) {}
           return [];
         })();
         klineInflight.set(key, job);
@@ -903,11 +884,12 @@
         const badge = root.querySelector("[data-badge]");
         host.innerHTML = "";
         if (badge) badge.textContent = `${baseAsset(symbol)} · ${chartTf(interval)}`;
-        const bars = syntheticKlines(symbol, interval);
+        const tf = chartTf(interval);
+        const bars = (await loadKlines(symbol, tf)) || [];
         const lw = null;
         const handle = {
-          symbol,
-          interval,
+          symbol: String(symbol || "").toUpperCase(),
+          interval: tf,
           bars,
           last: bars[bars.length - 1],
           chart: lw?.chart || null,
@@ -934,11 +916,38 @@
         charts.set(slot, handle);
       }
 
+      function applyBinanceKline(symbol, interval, bar, closed) {
+        const sym = String(symbol || "").toUpperCase();
+        const tf = chartTf(interval);
+        cacheKlineBar(sym, tf, bar);
+        for (let view = 1; view <= PAGE_SIZE; view += 1) {
+          const id = botIdOfSlot(view);
+          const st = botState.get(id);
+          if (!st) continue;
+          if (String(st.symbol).toUpperCase() !== sym) continue;
+          if (chartTf(st.interval) !== tf) continue;
+          applyKlineBar(id, bar, closed);
+        }
+      }
+
+      async function bootstrapMarks() {
+        try {
+          const res = await fetch("https://fapi.binance.com/fapi/v1/premiumIndex");
+          const rows = await res.json();
+          if (!Array.isArray(rows)) return;
+          for (const row of rows) {
+            const px = Number(row.markPrice);
+            if (row.symbol && px > 0) liveMarkBySymbol.set(String(row.symbol).toUpperCase(), px);
+          }
+        } catch (_err) {}
+      }
+
       function applyKlineBar(botId, bar, closed) {
         const slot = slotOfBot(botId);
         if (!slot) return;
         const handle = charts.get(slot);
         if (!handle || !bar) return;
+        if (!Array.isArray(handle.bars)) handle.bars = [];
         const last = handle.last;
         if (!last || bar.time > last.time) {
           handle.bars.push(bar);
@@ -1046,7 +1055,9 @@
 
       function syncClock(st, t = unixSec()) {
         if (!st) return;
-        st.mark = seededMark(st, t);
+        const live = liveMarkOf(st.symbol);
+        if (live) st.mark = roundPx(live, st.symbol);
+        else if (!(Number(st.mark) > 0)) st.mark = fallbackMark(st.symbol);
         st.baseBalance = clockBalance(st, t);
         st.exposure = clockExposure(st, t);
         if (!(Number(st.entry) > 0)) st.entry = canonicalEntry(st);
@@ -1187,6 +1198,7 @@
       async function applyConfig(slots) {
         slotsCache = (slots || localSlots()).map(safeSlot);
         if (slotsCache.length !== BOT_COUNT) slotsCache = localSlots().map(safeSlot);
+        await bootstrapMarks();
         for (let index = 0; index < slotsCache.length; index += 1) {
           const slot = slotsCache[index];
           const prev = botState.get(slot.id);
@@ -1237,22 +1249,20 @@
       function connectMarket() {
         if (marketWs) {
           marketWs.onclose = null;
-          marketWs.close();
+          try { marketWs.close(); } catch (_err) {}
         }
         const parts = [];
         const seen = new Set();
-        for (const slot of slotsCache) {
-          const s = slot.symbol.toLowerCase();
-          const markStream = `${s}@markPrice@1s`;
-          const klineStream = `${s}@kline_${slot.interval}`;
-          if (!seen.has(markStream)) {
-            parts.push(markStream);
-            seen.add(markStream);
-          }
-          if (!seen.has(klineStream)) {
-            parts.push(klineStream);
-            seen.add(klineStream);
-          }
+        const add = (stream) => {
+          if (seen.has(stream)) return;
+          seen.add(stream);
+          parts.push(stream);
+        };
+        for (const asset of MAJOR_ASSETS) {
+          const s = `${asset.toLowerCase()}usdt`;
+          add(`${s}@markPrice@1s`);
+          add(`${s}@kline_1m`);
+          add(`${s}@kline_3m`);
         }
         if (!parts.length) return;
         marketWs = new WebSocket(`wss://fstream.binance.com/stream?streams=${parts.join("/")}`);
@@ -1262,9 +1272,37 @@
         };
         marketWs.onmessage = (event) => {
           lastWsAt = Date.now();
-          const msg = JSON.parse(event.data);
+          let msg;
+          try { msg = JSON.parse(event.data); } catch (_err) { return; }
           const data = msg.data || msg;
-          if (data.e === "markPriceUpdate" || data.e === "kline") return;
+          if (data.e === "markPriceUpdate") {
+            const px = Number(data.p);
+            const sym = String(data.s || "").toUpperCase();
+            if (!sym || !Number.isFinite(px) || px <= 0) return;
+            liveMarkBySymbol.set(sym, px);
+            for (const rec of slotsCache) {
+              if (String(rec.symbol).toUpperCase() !== sym) continue;
+              const st = botState.get(rec.id);
+              if (!st) continue;
+              if (applyMark(st, px) && slotOfBot(rec.id)) {
+                paint(rec.id, { pnlDir: st.lastPnlDir || 0 });
+              }
+            }
+            return;
+          }
+          if (data.e === "kline" && data.k) {
+            const k = data.k;
+            applyBinanceKline(data.s || k.s, k.i, {
+              time: Math.floor(Number(k.t) / 1000),
+              open: Number(k.o),
+              high: Number(k.h),
+              low: Number(k.l),
+              close: Number(k.c),
+            }, Boolean(k.x));
+          }
+        };
+        marketWs.onerror = () => {
+          try { marketWs.close(); } catch (_err) {}
         };
         marketWs.onclose = () => {
           document.getElementById("link-status").textContent = "RECONNECTING MARKET FEED...";
@@ -1311,35 +1349,6 @@
         }
       }
 
-      function syncChartClock(id, st, t = unixSec()) {
-        const slot = slotOfBot(id);
-        if (!slot || !st) return;
-        const handle = charts.get(slot);
-        if (!handle) return;
-        const tf = chartTf(st.interval);
-        const step = chartStepSec(tf);
-        const aligned = t - (t % step);
-        const sample = chartSampleSec(t, tf);
-        if (!handle.last || handle.last.time !== aligned) {
-          handle.bars = syntheticKlines(st.symbol, tf);
-          handle.last = handle.bars[handle.bars.length - 1];
-          handle.chartSample = sample;
-          if (handle.canvas) queueCanvas(slot);
-          return;
-        }
-        if (handle.chartSample === sample) return;
-        handle.chartSample = sample;
-        const px = barCloseAt(st.symbol, tf, t);
-        pulseLastClose(id, px);
-      }
-
-      function jitterMark(st, px) {
-        const t = unixSec();
-        const rng = tickRng(t, st.id, st.symbol, "jitter");
-        const amp = Math.max(px * 0.00006, px >= 100 ? 0.2 : px * 0.0004);
-        return px + (rng() * 2 - 1) * amp;
-      }
-
       function startMarkPulse() {
         if (markPulseStarted) return;
         markPulseStarted = true;
@@ -1353,7 +1362,6 @@
             syncClock(st, t);
             st.lastPnlDir = st.pnl > prevPnl + 0.01 ? 1 : st.pnl < prevPnl - 0.01 ? -1 : 0;
             paint(id, { pnlDir: st.lastPnlDir || 0 });
-            syncChartClock(id, st, t);
           }
         }, 1000);
       }
@@ -1472,7 +1480,6 @@
           const slot = slotsCache.find((s) => s.id === id);
           if (st && slot) {
             paint(id);
-            syncChartClock(id, st);
           }
           mask.style.opacity = "0";
           setTimeout(() => {
