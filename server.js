@@ -126,6 +126,15 @@ function verifyWallLogin(username, password) {
 const store = loadStore();
 saveStore();
 
+let wss = { clients: new Set() };
+
+function broadcastJson(payload) {
+  const text = JSON.stringify(payload);
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1 && client.authed) client.send(text);
+  });
+}
+
 function parseCookies(req) {
   const header = req.headers.cookie || "";
   const out = {};
@@ -208,6 +217,15 @@ function requireRole(role) {
   };
 }
 
+function requireLoggedIn(req, res, next) {
+  const session = readSession(req);
+  if (!session) {
+    return res.status(401).json({ error: "未登录" });
+  }
+  req.session = session;
+  return next();
+}
+
 function publicSlots() {
   const MAJORS = new Set(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT"]);
   return store.slots.map((slot, i) => {
@@ -230,13 +248,8 @@ function publicSlots() {
   });
 }
 
-let wss = { clients: new Set() };
-
 function broadcastConfig() {
-  const text = JSON.stringify({ type: "config", slots: publicSlots() });
-  wss.clients.forEach((client) => {
-    if (client.readyState === 1 && client.authed) client.send(text);
-  });
+  broadcastJson({ type: "config", slots: publicSlots() });
 }
 
 const app = express();
@@ -342,6 +355,207 @@ app.get("/api/klines", async (req, res) => {
   }
 });
 
+const YAHOO_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+const YAHOO_MAP = {
+  SPX: "^GSPC",
+  NDX: "^IXIC",
+  DJI: "^DJI",
+  NVDA: "NVDA",
+  TSLA: "TSLA",
+  VIX: "^VIX",
+  XAU: "GC=F",
+  WTI: "CL=F",
+  XAG: "SI=F",
+  US10Y: "^TNX",
+  US2Y: "^IRX",
+  US30Y: "^TYX",
+  DXY: "DX-Y.NYB",
+};
+let quoteCache = { at: 0, quotes: {} };
+let newsCache = { at: 0, items: [] };
+let fngCache = { at: 0, value: 0, label: "" };
+
+async function fetchYahooChart(ysym) {
+  const { data } = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ysym)}`, {
+    params: { interval: "5m", range: "1d", includePrePost: "false" },
+    timeout: 8000,
+    headers: { "User-Agent": YAHOO_UA, Accept: "application/json" },
+  });
+  const result = data?.chart?.result?.[0];
+  if (!result) return null;
+  const meta = result.meta || {};
+  const px = Number(meta.regularMarketPrice);
+  const prev = Number(meta.chartPreviousClose || meta.previousClose);
+  const chg = prev > 0 && px > 0 ? ((px - prev) / prev) * 100 : 0;
+  const ts = result.timestamp || [];
+  const q = result.indicators?.quote?.[0] || {};
+  const bars = [];
+  for (let i = 0; i < ts.length; i += 1) {
+    const c = Number(q.close?.[i]);
+    if (!(c > 0)) continue;
+    const o = Number(q.open?.[i]) || c;
+    const h = Number(q.high?.[i]) || c;
+    const l = Number(q.low?.[i]) || c;
+    bars.push({ t: ts[i], o, h, l, c });
+  }
+  return { px, prev, chg, bars: bars.slice(-80) };
+}
+
+function decodeXmlText(raw) {
+  let s = String(raw || "");
+  s = s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1");
+  s = s.replace(/<[^>]+>/g, "");
+  s = s
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+  return s.replace(/\s+/g, " ").trim();
+}
+
+function splitPublisher(title, fallback) {
+  const m = String(title || "").match(/^(.*)\s[-–—]\s+(.{2,48})$/);
+  if (m && m[1].trim().length > 16) {
+    return { title: m[1].trim(), source: m[2].trim() };
+  }
+  return { title: String(title || "").trim(), source: fallback };
+}
+
+function parseRssItems(xml, source) {
+  const items = [];
+  const text = String(xml || "");
+  const blocks = text.match(/<item[\s\S]*?<\/item>/gi) || text.match(/<entry[\s\S]*?<\/entry>/gi) || [];
+  for (const block of blocks) {
+    if (items.length >= 16) break;
+    const rawTitle =
+      (block.match(/<title[^>]*><!\[CDATA\[([\s\S]*?)\]\]><\/title>/i) ||
+        block.match(/<title[^>]*>([\s\S]*?)<\/title>/i) ||
+        [])[1] || "";
+    const decoded = decodeXmlText(rawTitle);
+    if (!decoded) continue;
+    const split = splitPublisher(decoded, source);
+    const linkRaw =
+      (block.match(/<link[^>]*href=["']([^"']+)["']/i) ||
+        block.match(/<link>([\s\S]*?)<\/link>/i) ||
+        block.match(/<guid[^>]*>([\s\S]*?)<\/guid>/i) ||
+        [])[1] || "";
+    const url = decodeXmlText(linkRaw);
+    const date =
+      (block.match(/<pubDate>([\s\S]*?)<\/pubDate>/i) ||
+        block.match(/<published>([\s\S]*?)<\/published>/i) ||
+        block.match(/<updated>([\s\S]*?)<\/updated>/i) ||
+        block.match(/<dc:date>([\s\S]*?)<\/dc:date>/i) ||
+        [])[1] || "";
+    items.push({
+      title: split.title,
+      source: split.source || source,
+      date: decodeXmlText(date),
+      url,
+    });
+  }
+  return items;
+}
+
+const NEWS_FEEDS = [
+  { url: "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en", source: "Google" },
+  { url: "https://news.google.com/rss/search?q=Federal+Reserve+OR+FOMC+OR+%22interest+rate%22&hl=en-US&gl=US&ceid=US:en", source: "Fed" },
+  { url: "https://news.google.com/rss/search?q=bitcoin+OR+ethereum+OR+crypto+when:1d&hl=en-US&gl=US&ceid=US:en", source: "Crypto" },
+  { url: "https://news.google.com/rss/search?q=oil+OR+gold+OR+WTI+OR+crude&hl=en-US&gl=US&ceid=US:en", source: "Macro" },
+  { url: "https://www.coindesk.com/arc/outboundfeeds/rss/", source: "CoinDesk" },
+  { url: "https://www.cnbc.com/id/100003114/device/rss/rss.html", source: "CNBC" },
+  { url: "https://cointelegraph.com/rss", source: "Cointelegraph" },
+];
+
+async function refreshNewsCache(force) {
+  if (!force && Date.now() - newsCache.at < 25000 && newsCache.items.length) {
+    return newsCache.items;
+  }
+  const bag = [];
+  await Promise.all(
+    NEWS_FEEDS.map(async (feed) => {
+      try {
+        const { data } = await axios.get(feed.url, {
+          timeout: 9000,
+          headers: { "User-Agent": YAHOO_UA, Accept: "application/rss+xml, application/xml, text/xml, */*" },
+          responseType: "text",
+        });
+        bag.push(...parseRssItems(data, feed.source));
+      } catch (_err) {}
+    })
+  );
+  const seen = new Set();
+  const merged = [];
+  for (const row of bag) {
+    const key = String(row.title || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .slice(0, 90);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const ts = Date.parse(row.date);
+    merged.push({ ...row, ts: Number.isFinite(ts) ? ts : 0 });
+  }
+  merged.sort((a, b) => b.ts - a.ts);
+  const items = merged.slice(0, 30).map(({ ts, ...rest }) => rest);
+  if (items.length) newsCache = { at: Date.now(), items };
+  return newsCache.items;
+}
+
+app.get("/api/market/quotes", async (_req, res) => {
+  if (Date.now() - quoteCache.at < 12000 && quoteCache.quotes && Object.keys(quoteCache.quotes).length) {
+    return res.json({ ok: true, cached: true, quotes: quoteCache.quotes });
+  }
+  const quotes = {};
+  await Promise.all(
+    Object.entries(YAHOO_MAP).map(async ([key, ysym]) => {
+      try {
+        quotes[key] = await fetchYahooChart(ysym);
+      } catch (_err) {
+        quotes[key] = null;
+      }
+    })
+  );
+  quoteCache = { at: Date.now(), quotes };
+  res.json({ ok: true, quotes });
+});
+
+app.get("/api/market/fng", async (_req, res) => {
+  if (Date.now() - fngCache.at < 60000 && fngCache.value > 0) {
+    return res.json({ ok: true, cached: true, value: fngCache.value, label: fngCache.label });
+  }
+  try {
+    const { data } = await axios.get("https://api.alternative.me/fng/", { timeout: 6000 });
+    const row = (data && data.data && data.data[0]) || {};
+    fngCache = { at: Date.now(), value: Number(row.value) || 0, label: String(row.value_classification || "") };
+    res.json({ ok: true, value: fngCache.value, label: fngCache.label });
+  } catch (_err) {
+    res.json({ ok: false, value: fngCache.value, label: fngCache.label });
+  }
+});
+
+app.get("/api/market/news", async (_req, res) => {
+  const items = await refreshNewsCache(false);
+  res.json({ ok: true, items: items || [] });
+});
+
+app.get("/api/market/depth", async (_req, res) => {
+  try {
+    const { data } = await axios.get("https://api.binance.com/api/v3/depth", {
+      params: { symbol: "BTCUSDT", limit: 10 },
+      timeout: 5000,
+    });
+    res.json({ ok: true, bids: data.bids || [], asks: data.asks || [] });
+  } catch (_err) {
+    res.json({ ok: false, bids: [], asks: [] });
+  }
+});
+
 app.post("/api/admin/login", (req, res) => {
   const session = readSession(req);
   if (session?.role === "customer") {
@@ -408,6 +622,10 @@ if (!process.env.VERCEL) {
     console.log(`尼龙虾 NEEKO 智能交易 已启动 端口 ${PORT}`);
     console.log("本机预览请使用当前访问地址（http 自动走 http/ws，https 自动走 https/wss）");
     console.log("生产域名示例  https://neekoquant.com");
+    refreshNewsCache(true).catch(() => {});
+    setInterval(() => {
+      refreshNewsCache(true).catch(() => {});
+    }, 40000);
   });
 }
 

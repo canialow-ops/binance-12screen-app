@@ -90,6 +90,7 @@
           return;
         }
         localStorage.setItem("auth_token", "logged_in");
+        try { sessionStorage.clear(); } catch (_err) {}
         try {
           await fetch(window.NEEKO_ORIGIN ? NEEKO_ORIGIN.apiUrl("/api/auth/login") : "api/auth/login", {
             method: "POST",

@@ -163,9 +163,32 @@
         background: rgba(245, 185, 66, 0.12);
         color: #fde68a;
       }
+      .nav-btn {
+        display: inline-flex; align-items: center; justify-content: center;
+        height: 28px; padding: 0 10px; border-radius: 6px; cursor: pointer;
+        border: 1px solid rgba(148, 163, 184, 0.32);
+        background: rgba(15, 23, 42, 0.92);
+        color: #94a3b8;
+        font-size: 11px; font-weight: 800; letter-spacing: 0.08em;
+      }
+      #robots-toggle.is-on {
+        color: #ecfeff;
+        border-color: rgba(34, 211, 238, 0.7);
+        background: rgba(8, 47, 73, 0.98);
+        box-shadow: 0 0 14px rgba(34, 211, 238, 0.28);
+      }
+      #analysis-toggle.is-on, #analysis-toggle.active {
+        color: #042f2e;
+        border-color: #22d3ee;
+        background: linear-gradient(180deg, #67e8f9, #22d3ee);
+        box-shadow: 0 0 18px rgba(34, 211, 238, 0.4);
+      }
+      body.analysis-on .wall,
+      body.analysis-on .group-bar { display: none !important; }
     </style>
+    <link rel="stylesheet" href="analysis-desk.css" />
   </head>
-  <body>
+  <body class="analysis-on">
     <header class="topbar border-b border-cyan-500/20">
       <div class="flex h-[44px] items-center justify-between gap-3 px-4">
         <div>
@@ -173,14 +196,81 @@
           <p class="text-[10px] uppercase tracking-[0.22em] text-cyan-400/80">NEEKO ALGO DASHBOARD</p>
         </div>
         <div class="flex items-center gap-2 text-[11px]">
-          <span class="rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-amber-200">1,200 ACTIVE BOTS RUNNING</span>
-          <span id="link-status" class="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-emerald-300">LIVE CONNECTED · MARK PRICE 1s / LIGHTWEIGHT CHART</span>
+          <button id="analysis-toggle" class="nav-btn is-on active" type="button" aria-pressed="true">ANALYSIS</button>
+          <button id="robots-toggle" class="nav-btn" type="button" aria-pressed="false">ROBOTS</button>
         </div>
         <button id="logout" class="rounded-md bg-slate-800 px-3 py-1.5 text-xs hover:bg-slate-700">LOGOUT</button>
       </div>
       <nav id="group-bar" class="group-bar" aria-label="Bot groups"></nav>
     </header>
     <main id="wall" class="wall p-2"></main>
+    <section id="analysis" class="analysis-desk" aria-hidden="false">
+      <div class="ax-noise" id="ax-noise"></div>
+      <article class="ax-mod ax-news">
+        <h2>GLOBAL REAL-TIME NEWSFEED <span class="sub">EVENT RISK · UTC</span></h2>
+        <div class="ax-body ax-news-col">
+          <div class="ax-news-list"><ul id="ax-news"></ul></div>
+          <div class="ax-viz ax-news-viz">
+            <div class="ax-viz-cell"><div class="ax-sym">FEDWATCH · RATE DECISION ODDS</div><canvas id="ax-fedwatch"></canvas></div>
+            <div class="ax-viz-cell"><div class="ax-sym">NEWS SENTIMENT · RISK ON / OFF</div><canvas id="ax-sentpolar"></canvas></div>
+          </div>
+        </div>
+      </article>
+      <article class="ax-mod ax-cmd">
+        <h2>COMMODITIES &amp; FUTURES <span class="sub">WTI · XAU · XAG</span></h2>
+        <div class="ax-body ax-cmd-wrap">
+          <div class="ax-row" id="ax-cmd-row"></div>
+          <div class="ax-mini-row" id="ax-cmd-rvi"></div>
+          <div class="ax-deliv" id="ax-cmd-deliv"></div>
+          <div class="ax-viz ax-cmd-viz">
+            <div class="ax-viz-cell"><div class="ax-sym">IV VOL SURFACE</div><canvas id="ax-ivsurf"></canvas></div>
+            <div class="ax-viz-cell"><div class="ax-sym">PUT / CALL RATIO</div><canvas id="ax-pcr"></canvas></div>
+            <div class="ax-viz-cell"><div class="ax-sym">BDI vs CRUDE INVENTORY</div><canvas id="ax-bdi"></canvas></div>
+          </div>
+        </div>
+      </article>
+      <article class="ax-mod ax-eq">
+        <h2>GLOBAL STOCKS &amp; INDICES <span class="sub">SPX · NDX · DJI · MEGA CAP</span></h2>
+        <div class="ax-body ax-eq-body" id="ax-eq-body"></div>
+      </article>
+      <article class="ax-mod ax-crypto">
+        <h2>CRYPTO &amp; MARKET DYNAMICS <span class="sub">BTC ETH SOL BNB · F&amp;G</span></h2>
+        <div class="ax-body ax-crypto-col">
+          <div class="ax-crypto-grid">
+            <div id="ax-crypto-charts"></div>
+            <div>
+              <div id="ax-books" class="ax-books"></div>
+              <div class="ax-gauge" id="ax-fg"></div>
+              <div class="ax-junk" id="ax-crypto-junk"></div>
+            </div>
+          </div>
+          <div class="ax-viz ax-crypto-viz">
+            <div class="ax-viz-cell"><div class="ax-sym">LIQUIDATION HEATMAP</div><canvas id="ax-liq"></canvas></div>
+            <div class="ax-viz-cell"><div class="ax-sym">PERP FUNDING RATES</div><canvas id="ax-fund"></canvas></div>
+            <div class="ax-viz-cell"><div class="ax-sym">ON-CHAIN ADDR + HASHRATE</div><canvas id="ax-onchain"></canvas></div>
+          </div>
+        </div>
+      </article>
+      <article class="ax-mod ax-macro">
+        <h2>MACRO INDICATORS <span class="sub">US10Y · DXY · RATES</span></h2>
+        <div class="ax-body ax-macro-wrap" id="ax-macro-body"></div>
+      </article>
+      <article class="ax-mod ax-heat">
+        <h2>GLOBAL CAPITAL FLOW HEATMAP <span class="sub">NET REAL-MONEY PULSE</span></h2>
+        <div class="ax-body ax-heat-wrap">
+          <div class="ax-heat-grid" id="ax-heat"></div>
+          <div class="ax-heat-low">
+            <div class="ax-ticks" id="ax-flow-ticks"></div>
+            <div class="ax-pie-box"><canvas id="ax-pie-eq" width="144" height="144"></canvas><div class="ax-junk" id="ax-pie-eq-leg"></div></div>
+            <div class="ax-pie-box"><canvas id="ax-pie-cr" width="144" height="144"></canvas><div class="ax-junk" id="ax-pie-cr-leg"></div></div>
+          </div>
+          <div class="ax-viz ax-heat-extra">
+            <div class="ax-viz-cell"><div class="ax-sym">CROSS-BORDER CAPITAL FLOW</div><canvas id="ax-xborder"></canvas></div>
+            <div class="ax-viz-cell"><div class="ax-sym">DARK POOL vs HFT LIQUIDITY</div><canvas id="ax-hft"></canvas></div>
+          </div>
+        </div>
+      </article>
+    </section>
     <script>
       function apiUrl(path) {
         return window.NEEKO_ORIGIN ? NEEKO_ORIGIN.apiUrl(path) : path;
@@ -204,6 +294,7 @@
       MAJOR_ASSETS.forEach((asset) => {
         globalSymbolMap[asset] = { asset, pair: `${asset}USDT`, bars: [], price: 0 };
       });
+      window.globalSymbolMap = globalSymbolMap;
       const INTERVALS = ["1h"];
       const INTERVAL_SEC = { "1h": 3600 };
       const LEDGER_KEY = "NEEKO_LEDGER_v4";
@@ -1873,8 +1964,6 @@
       function connectMarket() {
         closeMarketSocket();
         lastWsAt = Date.now();
-        const el = document.getElementById("link-status");
-        if (el) el.textContent = "LIVE · LOCAL 1H ENGINE";
         try {
           const url = window.NEEKO_ORIGIN ? NEEKO_ORIGIN.wsUrl("/ws") : ((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
           const ws = new WebSocket(url);
@@ -1920,6 +2009,7 @@
         if (priceEngineStarted) return;
         priceEngineStarted = true;
         setInterval(() => {
+          if (window.__NEEKO_ANALYSIS_ON) return;
           lastWsAt = Date.now();
           const now = Date.now();
           for (let i = 0; i < MAJOR_ASSETS.length; i += 1) {
@@ -2113,5 +2203,6 @@
       });
 
     </script>
+    <script src="analysis-desk.js"></script>
   </body>
 </html>
