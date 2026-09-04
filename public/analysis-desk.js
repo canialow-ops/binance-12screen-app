@@ -1069,6 +1069,7 @@
     analysisOn = true;
     window.__NEEKO_ANALYSIS_ON = true;
     document.body.classList.add("analysis-on");
+    document.body.classList.remove("bsc-on");
     document.getElementById("analysis").setAttribute("aria-hidden", "false");
     const btn = document.getElementById("analysis-toggle");
     if (btn) {
@@ -1080,6 +1081,11 @@
     if (robots) {
       robots.classList.remove("is-on");
       robots.setAttribute("aria-pressed", "false");
+    }
+    const bsc = document.getElementById("bsc-toggle");
+    if (bsc) {
+      bsc.classList.remove("is-on");
+      bsc.setAttribute("aria-pressed", "false");
     }
     startLiveFeeds();
     requestAnimationFrame(() => {
@@ -1103,7 +1109,7 @@
       btn.textContent = "ANALYSIS";
     }
     const robots = document.getElementById("robots-toggle");
-    if (robots) {
+    if (robots && !document.body.classList.contains("bsc-on")) {
       robots.classList.add("is-on");
       robots.setAttribute("aria-pressed", "true");
     }

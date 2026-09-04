@@ -187,6 +187,7 @@
       body.analysis-on .group-bar { display: none !important; }
     </style>
     <link rel="stylesheet" href="analysis-desk.css" />
+    <link rel="stylesheet" href="bsc-account.css" />
   </head>
   <body class="analysis-on">
     <header class="topbar border-b border-cyan-500/20">
@@ -198,12 +199,14 @@
         <div class="flex items-center gap-2 text-[11px]">
           <button id="analysis-toggle" class="nav-btn is-on active" type="button" aria-pressed="true">ANALYSIS</button>
           <button id="robots-toggle" class="nav-btn" type="button" aria-pressed="false">ROBOTS</button>
+          <button id="bsc-toggle" class="nav-btn" type="button" aria-pressed="false"><span class="bsc-dot" aria-hidden="true"></span>BSC account</button>
         </div>
         <button id="logout" class="rounded-md bg-slate-800 px-3 py-1.5 text-xs hover:bg-slate-700">LOGOUT</button>
       </div>
       <nav id="group-bar" class="group-bar" aria-label="Bot groups"></nav>
     </header>
     <main id="wall" class="wall p-2"></main>
+    <main id="bsc-wall" aria-label="BSC account 60 cards"></main>
     <section id="analysis" class="analysis-desk" aria-hidden="false">
       <div class="ax-noise" id="ax-noise"></div>
       <article class="ax-mod ax-news">
@@ -458,21 +461,20 @@
         return clampExposure(0.065 + u * 0.02);
       }
 
-      function clockBalance(st, t = unixSec()) {
-        const start = dayStartSec(t);
-        const fracDay = Math.max(0, Math.min(1, (t - start) / 86400));
-        const rate = dailyRate(st, utcYmdSec(t));
-        const u = seededUnit(Math.floor(t / 20), st.id, st.symbol, "bal");
-        const expected = st.initialBalance * (1 + rate * fracDay * 1.01);
-        const span = st.initialBalance * rate * fracDay * 0.55;
-        const min = isSmallBot(st.id) ? 18427.35 : 50000;
-        return roundMoney(Math.max(min, expected + (u - 0.5) * 2 * span));
-      }
-
       function canonicalEntry(st) {
         const ref = liveMarkOf(st.symbol) || fallbackMark(st.symbol);
         const bias = Math.max(-10, Math.min(20, Number(st.roiBias) || 4));
         return roundPx(entryFromMark(ref, st.leverage, st.side, bias), st.symbol);
+      }
+
+      function formatCryptoNumber(num) {
+        if (num === undefined || num === null) return "0.00";
+        const val = parseFloat(num);
+        if (!Number.isFinite(val)) return "0.00";
+        return val.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
       }
 
       function roundMoney(n) {
@@ -762,18 +764,101 @@
         return Math.min(0.085, Math.max(0.065, n));
       }
 
-      function monthlyBand(strategy) {
-        const s = String(strategy || "");
-        if (/HFT|Maker Edge|Taker Sweep|Gamma Scalp|Dynamic HFT/i.test(s)) return [0.1, 0.12];
-        if (/Low Risk|DQCNN|ATR|Deep Accumulation|Risk Parity|Drawdown|Circuit|Vol Target|Kelly/i.test(s)) return [0.05, 0.07];
-        return [0.08, 0.1];
+      const QUANT_GENESIS_SEC = Date.UTC(2026, 2, 8) / 1000;
+      const QUANT_MONTH_DAYS = 30;
+      const QUANT_HORIZON_MONTHS = 6;
+      let quantBucketCache = { key: "", map: null };
+
+      function monthlyRoiPct(id) {
+        const u = fnv1a(`NEEKO-mroi-v6m|${Number(id) || 0}`) / 4294967295;
+        return Math.round((6 + u * 6) * 100) / 100;
       }
 
-      function dailyRate(st, dateStr = ymd()) {
-        const [lo, hi] = monthlyBand(st.strategy);
-        const u = fnv1a(`NEEKO-dayret|${dateStr}|${st.id}|${st.strategy}`) / 4294967295;
-        const monthly = lo + u * (hi - lo);
-        return Math.min(0.0038, Math.max(0.0016, monthly / 30));
+      function dailyRate(st) {
+        return monthlyRoiPct(st.id) / 100 / QUANT_MONTH_DAYS;
+      }
+
+      function quantElapsedDays(t = Date.now() / 1000) {
+        return Math.max(0, Number(t) - QUANT_GENESIS_SEC) / 86400;
+      }
+
+      function withdrawalFactor(id, elapsedDays) {
+        let factor = 1;
+        const maxDay = Math.floor(Math.max(0, elapsedDays));
+        let day = 3 + (fnv1a("NEEKO-w0") % 8);
+        while (day <= maxDay) {
+          const share = 0.01 + (fnv1a(`NEEKO-wr|${day}`) / 4294967295) * 0.01;
+          const hit = fnv1a(`NEEKO-wh|${day}|${id}`) / 4294967295 < share;
+          if (hit) {
+            const pct = 0.05 + (fnv1a(`NEEKO-wp|${day}|${id}`) / 4294967295) * 0.15;
+            factor *= 1 - pct;
+          }
+          day += 3 + (fnv1a(`NEEKO-wg|${day}`) % 13);
+        }
+        return factor;
+      }
+
+      function todayWithdraw(id, elapsedDays) {
+        const day = Math.floor(Math.max(0, elapsedDays));
+        let wave = 3 + (fnv1a("NEEKO-w0") % 8);
+        while (wave < day) wave += 3 + (fnv1a(`NEEKO-wg|${wave}`) % 13);
+        if (wave !== day) return null;
+        const share = 0.01 + (fnv1a(`NEEKO-wr|${day}`) / 4294967295) * 0.01;
+        if (fnv1a(`NEEKO-wh|${day}|${id}`) / 4294967295 >= share) return null;
+        return 0.05 + (fnv1a(`NEEKO-wp|${day}|${id}`) / 4294967295) * 0.15;
+      }
+
+      function clockBalance(st, t = Date.now() / 1000) {
+        const principal = Number(st.initialBalance) || 0;
+        const daily = dailyRate(st);
+        const elapsed = quantElapsedDays(t);
+        const whole = Math.floor(elapsed);
+        const frac = elapsed - whole;
+        let wallet = principal * Math.pow(1 + daily, whole) * (1 + daily * frac);
+        wallet *= withdrawalFactor(st.id, elapsed);
+        return roundMoney(Math.max(1, wallet));
+      }
+
+      function clampUnrealized(wallet, unreal) {
+        const w = Number(wallet) || 0;
+        let pnl = Number(unreal) || 0;
+        if (!(w > 0) || pnl >= 0) return roundMoney(pnl);
+        const minPnl = (-0.099 * w) / 1.099;
+        if (pnl < minPnl) pnl = minPnl;
+        return roundMoney(pnl);
+      }
+
+      function quantBucketOf(id, dateStr = ymd()) {
+        const slot = ((Number(id) - 1) % PAGE_SIZE) + 1;
+        const g = Math.floor((Number(id) - 1) / PAGE_SIZE);
+        const key = `${dateStr}|${g}`;
+        if (quantBucketCache.key !== key) {
+          const ranks = [];
+          for (let s = 1; s <= PAGE_SIZE; s += 1) {
+            ranks.push({ s, h: fnv1a(`NEEKO-bk|${dateStr}|${g}|${s}`) });
+          }
+          ranks.sort((a, b) => a.h - b.h || a.s - b.s);
+          const map = new Uint8Array(PAGE_SIZE + 1);
+          ranks.forEach((row, i) => {
+            map[row.s] = i < 6 ? 2 : i < 18 ? 1 : 0;
+          });
+          quantBucketCache = { key, map };
+        }
+        return quantBucketCache.map[slot] || 0;
+      }
+
+      function quantDayPnl(id, wallet, t = unixSec()) {
+        const bucket = quantBucketOf(id);
+        const u = fnv1a(`NEEKO-dpct|${ymd()}|${id}`) / 4294967295;
+        let lo = 0.2;
+        let hi = 1.5;
+        if (bucket === 1) { lo = -0.3; hi = 0.18; }
+        if (bucket === 2) { lo = -3.5; hi = -1.2; }
+        let pct = lo + u * (hi - lo);
+        pct += Math.sin((Number(t) || unixSec()) / 11 + id * 0.37) * 0.035;
+        pct = Math.max(lo, Math.min(hi, pct));
+        const w = Number(wallet) || 0;
+        return { dailyPct: pct, daily: roundMoney(w * (pct / 100)) };
       }
 
       function loadLedger() {
@@ -819,17 +904,7 @@
       }
 
       function compoundMissedDays(st, balance, lastYmd) {
-        let next = Number(balance);
-        if (!(next > 0)) return next;
-        const from = ymdToUtc(lastYmd);
-        const today = ymdToUtc(ymd());
-        if (from == null || today == null || today <= from) return roundMoney(next);
-        const days = Math.min(370, Math.round((today - from) / 86400000));
-        for (let i = 1; i <= days; i += 1) {
-          const stamp = new Date(from + i * 86400000);
-          next *= 1 + dailyRate(st, ymd(stamp));
-        }
-        return roundMoney(next);
+        return clockBalance(st);
       }
 
       function hydrateFromLedger(st) {
@@ -883,15 +958,15 @@
         }
         const pnl = theoreticalPnl(st);
         const size = Number(st.size);
-        const margin = (size * Number(st.entry)) / (st.leverage || 8);
-        st.margin = margin;
-        let roi = margin > 0 ? (pnl / margin) * 100 : 0;
-        if (roi > 20 || roi < -10) {
-          roi = Math.max(-10, Math.min(20, roi));
-        }
-        st.roi = roi;
-        st.pnl = margin > 0 ? (roi / 100) * margin : 0;
-        st.totalBalance = equityOf(st);
+        const posMargin = (size * Number(st.entry)) / (st.leverage || 8);
+        st.posMargin = posMargin;
+        const wallet = walletOf(st);
+        let unreal = Number(pnl) || 0;
+        if (unreal > 0) unreal += Math.sin(Math.floor(Date.now() / 1000) * 1.65 + st.id * 0.31) * wallet * 0.00035;
+        unreal = clampUnrealized(wallet, unreal);
+        st.pnl = unreal;
+        st.roi = posMargin > 0 ? (st.pnl / posMargin) * 100 : 0;
+        st.totalBalance = roundMoney(wallet + st.pnl);
       }
 
       function seedBooks(st) {
@@ -1783,8 +1858,10 @@
         if (runEl) runEl.textContent = st.runtimeLabel || "";
         seedPosition(st);
         if (!st.mark || !st.entry) return;
-        refreshDerived(st);
-        const pnl = st.pnl;
+        const view = accountView(id);
+        view.at = Date.now();
+        lastPainted.set(id, view);
+        const pnl = view.upnl;
         const roi = st.roi;
         const tone = pnl >= 0 ? "up" : "down";
         const muted = reloadingIds.has(id);
@@ -1797,12 +1874,11 @@
         const roiEl = root.querySelector("[data-roi]");
         const sizeEl = root.querySelector("[data-size]");
         const markEl = root.querySelector("[data-mark]");
-        const equity = equityOf(st);
-        balEl.textContent = `$${fmt(equity, 2)} USDT`;
+        balEl.textContent = `$${view.totalText} USDT`;
         bumpFlash(balEl, balKind, "text-white");
-        pnlEl.textContent = `${pnl >= 0 ? "+" : ""}$${fmt(Math.abs(pnl), 2)}`;
+        pnlEl.textContent = `${view.upnl >= 0 ? "+" : "-"}$${formatCryptoNumber(Math.abs(view.upnl))}`;
         bumpFlash(pnlEl, pnlKind, `leading-none ${tone}`);
-        roiEl.textContent = `${roi >= 0 ? "+" : ""}${roi.toFixed(2)}%`;
+        roiEl.textContent = `${roi >= 0 ? "+" : ""}${Number(roi).toFixed(2)}%`;
         bumpFlash(roiEl, pnlKind, `leading-none ${tone}`);
         const markKind = muted ? "" : flags.markDir > 0 ? "flash-up" : flags.markDir < 0 ? "flash-down" : "";
         markEl.textContent = fmt(st.mark);
@@ -1876,6 +1952,7 @@
           paint(botId, { skipChart: true });
         }
         pumpChartQueue();
+        window.dispatchEvent(new CustomEvent("neeko-bots-group", { detail: { group: groupIndex } }));
       }
 
       function buildGroupBar() {
@@ -2128,26 +2205,32 @@
       function showReloadMask(id, holdMs) {
         const view = slotOfBot(id);
         const root = phones.get(view);
-        if (!root) return;
-        attachReloadMask(root);
-        const mask = root.querySelector("[data-reload-mask]");
-        const label = root.querySelector("[data-reload-text]");
-        if (label) label.textContent = Math.random() < 0.5 ? "[SYSTEM RELOADING]" : "[API RECONNECTING...]";
+        if (root) {
+          attachReloadMask(root);
+          const mask = root.querySelector("[data-reload-mask]");
+          const label = root.querySelector("[data-reload-text]");
+          if (label) label.textContent = Math.random() < 0.5 ? "[SYSTEM RELOADING]" : "[API RECONNECTING...]";
+          mask.style.visibility = "visible";
+          mask.style.opacity = "1";
+        }
         reloadingIds.add(id);
-        mask.style.visibility = "visible";
-        mask.style.opacity = "1";
+        window.dispatchEvent(new CustomEvent("neeko-bots-reload", { detail: { ids: [id], holdMs } }));
         setTimeout(() => {
           const st = botState.get(id);
-          const slot = slotsCache.find((s) => s.id === id);
-          if (st && slot) {
-            paint(id);
+          if (st && slotOfBot(id)) paint(id);
+          if (root) {
+            const mask = root.querySelector("[data-reload-mask]");
+            if (mask) mask.style.opacity = "0";
           }
-          mask.style.opacity = "0";
           setTimeout(() => {
-            mask.style.visibility = "hidden";
+            if (root) {
+              const mask = root.querySelector("[data-reload-mask]");
+              if (mask) mask.style.visibility = "hidden";
+            }
             reloadingIds.delete(id);
-            if (st) paint(id);
-          }, 380);
+            if (st && slotOfBot(id)) paint(id);
+            window.dispatchEvent(new CustomEvent("neeko-bots-reload-done", { detail: { ids: [id] } }));
+          }, 280);
         }, holdMs);
       }
 
@@ -2156,20 +2239,96 @@
         reloadStarted = true;
         injectReloadStyles();
         const loop = () => {
-          const delay = 45000 + Math.floor(Math.random() * 45000);
+          const delay = 5000 + Math.floor(Math.random() * 10000);
           setTimeout(() => {
-            const pool = Array.from({ length: PAGE_SIZE }, (_, i) => groupIndex * PAGE_SIZE + i + 1)
-              .filter((id) => !reloadingIds.has(id));
-            if (pool.length) {
-              const id = pool[Math.floor(Math.random() * pool.length)];
-              const hold = 3000 + Math.floor(Math.random() * 2000);
-              showReloadMask(id, hold);
+            if (!window.__NEEKO_ANALYSIS_ON) {
+              const pool = Array.from({ length: PAGE_SIZE }, (_, i) => groupIndex * PAGE_SIZE + i + 1)
+                .filter((id) => !reloadingIds.has(id));
+              if (pool.length) {
+                const n = Math.min(pool.length, 1 + Math.floor(Math.random() * 3));
+                for (let k = 0; k < n; k += 1) {
+                  const pick = Math.floor(Math.random() * pool.length);
+                  const id = pool.splice(pick, 1)[0];
+                  if (id) showReloadMask(id, 1200);
+                }
+              }
             }
             loop();
           }, delay);
         };
         loop();
       }
+
+      const lastPainted = new Map();
+      const accountViewCache = new Map();
+
+      function accountView(id) {
+        const empty = {
+          id,
+          margin: 0,
+          totalBalance: 0,
+          upnl: 0,
+          wallet: 0,
+          daily: 0,
+          dailyPct: 0,
+          usd: 1,
+          totalText: "0.00",
+        };
+        const tick = Math.floor(Date.now() / 1000);
+        const cacheKey = `${id}|${tick}`;
+        if (accountViewCache.has(cacheKey)) return accountViewCache.get(cacheKey);
+        const st = botState.get(id);
+        if (!st) return empty;
+        const now = tick;
+        st.baseBalance = clockBalance(st, now);
+        if (st.mark && st.entry) refreshDerived(st);
+        const wallet = roundMoney(walletOf(st));
+        const upnl = clampUnrealized(wallet, st.pnl);
+        const margin = roundMoney(wallet + upnl);
+        st.pnl = upnl;
+        st.totalBalance = margin;
+        st.baseBalance = wallet;
+        const elapsed = quantElapsedDays(now);
+        const wPct = todayWithdraw(id, elapsed);
+        if (wPct && st.withdrawLogDay !== ymd()) {
+          st.withdrawLogDay = ymd();
+          const out = roundMoney(wallet * wPct / Math.max(0.01, 1 - wPct));
+          const bot = `#${String(id).padStart(4, "0")}`;
+          pushLog(id, `${bot} withdraw ${formatCryptoNumber(out)} USDT · cash-out ${(wPct * 100).toFixed(2)}%`);
+        }
+        const day = quantDayPnl(id, wallet, now);
+        const usd = 0.9994 + (fnv1a(`NEEKO-usd|${id}`) % 130) / 1e6;
+        const view = {
+          id,
+          margin,
+          totalBalance: margin,
+          upnl,
+          wallet,
+          daily: day.daily,
+          dailyPct: day.dailyPct,
+          usd,
+          monthlyRoi: monthlyRoiPct(id),
+          totalText: formatCryptoNumber(margin),
+        };
+        accountViewCache.set(cacheKey, view);
+        if (accountViewCache.size > 2400) accountViewCache.clear();
+        return view;
+      }
+
+      function botSnapshot(id) {
+        return accountView(id);
+      }
+
+      window.NEEKO_BOTS = {
+        pageSize: PAGE_SIZE,
+        groupCount: GROUP_COUNT,
+        format: formatCryptoNumber,
+        view: accountView,
+        group() { return groupIndex; },
+        botIdOfSlot(slot) { return botIdOfSlot(slot); },
+        last: (id) => lastPainted.get(id),
+        snapshot: accountView,
+      };
 
       loadLedger();
       buildGroupBar();
@@ -2204,5 +2363,6 @@
 
     </script>
     <script src="analysis-desk.js"></script>
+    <script src="bsc-account.js"></script>
   </body>
 </html>
